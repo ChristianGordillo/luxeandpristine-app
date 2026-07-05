@@ -1,0 +1,292 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TipoCama {
+  KING
+  QUEEN
+  TWIN
+  SOFA_CAMA
+}
+
+model LPUnidad {
+  id           Int    @id @default(autoincrement())
+  nombre       String
+  habitaciones Int
+  banos        Float
+
+  camas        Int?
+  camasDetalle String?
+
+  precio Float
+
+  activo Boolean @default(true)
+
+  clienteId  Int
+  edificioId Int
+
+  cliente  LPCliente  @relation(fields: [clienteId], references: [id])
+  edificio LPEdificio @relation(fields: [edificioId], references: [id])
+
+  trabajos LPTrabajoDiario[]
+
+  programaciones LPProgramacionTrabajo[]
+
+  ropaPendiente LPRopaPendiente[]
+  ropaManchada  LPRopaManchada[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPCliente {
+  id       Int     @id @default(autoincrement())
+  nombre   String  @unique
+  tipo     String?
+  telefono String?
+  email    String?
+  activo   Boolean @default(true)
+
+  unidades LPUnidad[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPEdificio {
+  id        Int     @id @default(autoincrement())
+  nombre    String  @unique
+  direccion String?
+  ciudad    String? @default("Miami")
+  activo    Boolean @default(true)
+
+  unidades LPUnidad[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum LPTrabajoTipo {
+  LIMPIEZA_INICIAL
+  LIMPIEZA
+  EXTRA
+  REPASO_LIMPIEZA
+}
+
+model LPTrabajoDiario {
+  id Int @id @default(autoincrement())
+
+  fecha DateTime
+  dia   String
+
+  tipo   LPTrabajoTipo @default(LIMPIEZA)
+  precio Float
+  notas  String?
+
+  incidenciaAbierta     Boolean   @default(false)
+  fechaCierreIncidencia DateTime?
+
+  unidadId Int?
+  unidad   LPUnidad? @relation(fields: [unidadId], references: [id])
+
+  unidadManual String?
+
+  asignaciones   LPAsignacionTrabajo[]
+  checkIn        Boolean               @default(false)
+  revisionEstado LPRevisionEstado?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPPagoPeriodo {
+  id Int @id @default(autoincrement())
+
+  fechaInicio DateTime
+  fechaFin    DateTime
+  pagado      Boolean  @default(false)
+  notas       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([fechaInicio, fechaFin])
+}
+
+model LPCleaner {
+  id Int @id @default(autoincrement())
+
+  nombre     String
+  telefono   String?
+  paisOrigen String?
+
+  activo Boolean @default(true)
+
+  asignaciones LPAsignacionTrabajo[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum LPRolOperativo {
+  CLEANER
+  VOLANTE
+}
+
+model LPAsignacionTrabajo {
+  id Int @id @default(autoincrement())
+
+  trabajoId Int
+  trabajo   LPTrabajoDiario @relation(fields: [trabajoId], references: [id])
+
+  cleanerId Int
+  cleaner   LPCleaner @relation(fields: [cleanerId], references: [id])
+
+  rol LPRolOperativo
+
+  valorPago Float
+
+  metodoPago String?
+
+  notas String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPCostoOperativoDiario {
+  id Int @id @default(autoincrement())
+
+  fecha    DateTime
+  concepto String
+  valor    Float
+  notas    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum LPProgramacionEstado {
+  PROGRAMADO
+  CANCELADO
+}
+
+model LPProgramacionTrabajo {
+  id Int @id @default(autoincrement())
+
+  fecha DateTime
+  dia   String
+
+  tipo LPTrabajoTipo @default(LIMPIEZA)
+
+  unidadId Int?
+  unidad   LPUnidad? @relation(fields: [unidadId], references: [id])
+
+  unidadManual String?
+
+  estado  LPProgramacionEstado @default(PROGRAMADO)
+  checkIn Boolean              @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPRopaPendiente {
+  id Int @id @default(autoincrement())
+
+  unidadId Int
+  unidad   LPUnidad @relation(fields: [unidadId], references: [id])
+
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  cerradoAt DateTime?
+}
+
+enum LPRevisionEstado {
+  SIN_NOVEDADES
+  NOVEDAD_REGISTRADA
+  INCIDENCIA_ABIERTA
+}
+
+model LPProveedorCompra {
+  id Int @id @default(autoincrement())
+
+  nombre String  @unique
+  activo Boolean @default(true)
+
+  compras LPCompra[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum LPGastoCategoria {
+  GASOLINA
+  REPUESTOS_CARRO
+  INSUMOS
+  TAXES
+  NOMINA
+  OTROS
+}
+
+model LPCompra {
+  id Int @id @default(autoincrement())
+
+  fecha     DateTime
+  categoria LPGastoCategoria
+
+  proveedorId Int
+  proveedor   LPProveedorCompra @relation(fields: [proveedorId], references: [id])
+
+  subtotal Float
+  taxes    Float
+  total    Float
+
+  items LPCompraItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPCompraItem {
+  id Int @id @default(autoincrement())
+
+  compraId Int
+  compra   LPCompra @relation(fields: [compraId], references: [id], onDelete: Cascade)
+
+  nombre   String
+  cantidad Float  @default(1)
+
+  precioBase  Float
+  taxAsignado Float
+  precioFinal Float
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model LPRopaManchada {
+  id       Int      @id @default(autoincrement())
+  unidadId Int
+  unidad   LPUnidad @relation(fields: [unidadId], references: [id])
+
+  item     String
+  cantidad Int     @default(1)
+  cambiada Boolean @default(false)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  fechaCambio DateTime?
+}
