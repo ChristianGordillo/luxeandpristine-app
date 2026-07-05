@@ -1,4 +1,4 @@
-import InteligenciaOperativa from "@/components/lp/InteligenciaOperativa";
+import InteligenciaOperativa from "@/app/components/lp/InteligenciaOperativa";
 
 export default function InteligenciaOperativaPage() {
   return (
