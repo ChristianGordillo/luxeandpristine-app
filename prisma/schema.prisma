@@ -230,6 +230,29 @@ model LPProveedorCompra {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([activo])
+}
+
+model LPProductoCompra {
+  id Int @id @default(autoincrement())
+
+  nombre            String
+  nombreNormalizado String @unique
+
+  marca        String?
+  presentacion String?
+
+  activo Boolean @default(true)
+
+  items LPCompraItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([nombre])
+  @@index([marca])
+  @@index([activo])
 }
 
 enum LPGastoCategoria {
@@ -258,6 +281,10 @@ model LPCompra {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([fecha])
+  @@index([categoria])
+  @@index([proveedorId])
 }
 
 model LPCompraItem {
@@ -266,15 +293,29 @@ model LPCompraItem {
   compraId Int
   compra   LPCompra @relation(fields: [compraId], references: [id], onDelete: Cascade)
 
-  nombre   String
-  cantidad Float  @default(1)
+  productoId Int?
+  producto   LPProductoCompra? @relation(fields: [productoId], references: [id], onDelete: SetNull)
 
-  precioBase  Float
+  // Conserva el nombre exacto registrado en la compra.
+  nombre String
+
+  cantidad Float @default(1)
+
+  // Total de la línea antes de taxes.
+  precioBase Float
+
+  // Parte de los taxes asignada a este producto.
   taxAsignado Float
+
+  // Total de la línea con taxes incluidos.
   precioFinal Float
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([compraId])
+  @@index([productoId])
+  @@index([nombre])
 }
 
 model LPRopaManchada {
