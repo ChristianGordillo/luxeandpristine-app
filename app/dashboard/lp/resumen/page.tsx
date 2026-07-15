@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ResumenNavigation from "@/app/components/lp/ResumenNavigation";
 
 type CostoOperativo = {
   id: number;
@@ -206,12 +207,13 @@ export default function ResumenFinancieroPage() {
         <h1 className="text-2xl font-bold text-lp-navy">
           Resumen financiero
         </h1>
+        <ResumenNavigation />
         <p className="text-sm text-lp-navy/70 mt-1">
           Control general por rango de fechas: ingresos, pagos a cleaners,
           pendientes y costos eventuales.
         </p>
       </div>
-
+      
       <div className="bg-white border rounded-2xl shadow-sm p-4 sm:p-5 space-y-4">
         <h2 className="font-bold text-lp-navy">Rango de facturación</h2>
 

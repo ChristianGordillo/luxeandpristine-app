@@ -14,10 +14,27 @@ function fechaKey(date: Date) {
 
 function calcularPagoSugerido(precioTrabajo: number) {
   if (Number(precioTrabajo) === 80) return 60;
-  if (Number(precioTrabajo) === 65) return 50;
   if (Number(precioTrabajo) === 68) return 55;
+  if (Number(precioTrabajo) === 65) return 50;
+  if (Number(precioTrabajo) === 55) return 40;
+  if (Number(precioTrabajo) === 20) return 10;
 
   return 0;
+}
+
+function construirTipoUnidad(
+  habitaciones?: number | null,
+  banos?: number | null
+) {
+  if (habitaciones === null || habitaciones === undefined) {
+    return "—";
+  }
+
+  if (banos === null || banos === undefined) {
+    return `${habitaciones}/—`;
+  }
+
+  return `${habitaciones}/${banos}`;
 }
 
 export async function GET(request: NextRequest) {
@@ -30,7 +47,10 @@ export async function GET(request: NextRequest) {
 
     if (!desde || !hasta) {
       return NextResponse.json(
-        { status: "fail", message: "Debes enviar desde y hasta" },
+        {
+          status: "fail",
+          message: "Debes enviar desde y hasta",
+        },
         { status: 400 }
       );
     }
@@ -87,6 +107,10 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
+    /*
+     * Los costos operativos todavía no están asociados a clientes.
+     * Por eso solamente se incluyen cuando la vista está en TODOS.
+     */
     const costosAplicables = cliente === "TODOS" ? costosOperativos : [];
 
     const totalTrabajado = trabajos.reduce(
@@ -121,6 +145,10 @@ export async function GET(request: NextRequest) {
       totalAsignadoCleaners -
       totalPendienteAsignar -
       totalCostosOperativos;
+
+    /*
+     * RESUMEN FINANCIERO AGRUPADO POR DÍA
+     */
 
     const mapaDias = new Map<
       string,
@@ -187,6 +215,7 @@ export async function GET(request: NextRequest) {
       }
 
       const item = mapaDias.get(key)!;
+
       item.totalCostosOperativos += Number(costo.valor || 0);
     });
 
@@ -201,9 +230,119 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => b.fecha.localeCompare(a.fecha));
 
+    /*
+     * DETALLE PLANO DE TRABAJOS
+     *
+     * Esta colección será utilizada para:
+     * - Mostrar la nueva pantalla.
+     * - Exportar CSV.
+     * - Exportar Excel.
+     */
+
+    const trabajosDetalle = trabajos.map((trabajo) => {
+      const totalPagoCleaners = trabajo.asignaciones.reduce(
+        (sum, asignacion) => sum + Number(asignacion.valorPago || 0),
+        0
+      );
+
+      const pagoPendiente =
+        trabajo.asignaciones.length === 0
+          ? calcularPagoSugerido(Number(trabajo.precio || 0))
+          : 0;
+
+      return {
+        id: trabajo.id,
+        fecha: fechaKey(trabajo.fecha),
+        dia: trabajo.dia,
+
+        cliente: trabajo.unidad?.cliente?.nombre || "Sin cliente",
+        edificio: trabajo.unidad?.edificio?.nombre || "Eventual",
+        unidad:
+          trabajo.unidad?.nombre ||
+          trabajo.unidadManual ||
+          "Unidad eventual",
+
+        habitaciones: trabajo.unidad?.habitaciones ?? null,
+        banos: trabajo.unidad?.banos ?? null,
+        tipoUnidad: construirTipoUnidad(
+          trabajo.unidad?.habitaciones,
+          trabajo.unidad?.banos
+        ),
+
+        tipoTrabajo: trabajo.tipo,
+        precio: Number(trabajo.precio || 0),
+        notas: trabajo.notas || null,
+
+        asignado: trabajo.asignaciones.length > 0,
+        cantidadAsignaciones: trabajo.asignaciones.length,
+        totalPagoCleaners,
+        pagoPendiente,
+
+        utilidadEstimada:
+          Number(trabajo.precio || 0) -
+          totalPagoCleaners -
+          pagoPendiente,
+
+        cleaners: trabajo.asignaciones.map((asignacion) => ({
+          id: asignacion.cleaner.id,
+          nombre: asignacion.cleaner.nombre,
+          rol: asignacion.rol,
+          valorPago: Number(asignacion.valorPago || 0),
+        })),
+      };
+    });
+
+    /*
+     * DETALLE DE TRABAJOS AGRUPADO POR DÍA
+     *
+     * Esto facilita la visualización móvil y permite mostrar
+     * el subtotal de cada fecha.
+     */
+
+    const mapaDetalleDias = new Map<
+      string,
+      {
+        fecha: string;
+        dia: string;
+        cantidadTrabajos: number;
+        totalPrecio: number;
+        trabajos: typeof trabajosDetalle;
+      }
+    >();
+
+    trabajosDetalle.forEach((trabajo) => {
+      if (!mapaDetalleDias.has(trabajo.fecha)) {
+        mapaDetalleDias.set(trabajo.fecha, {
+          fecha: trabajo.fecha,
+          dia: trabajo.dia,
+          cantidadTrabajos: 0,
+          totalPrecio: 0,
+          trabajos: [],
+        });
+      }
+
+      const grupo = mapaDetalleDias.get(trabajo.fecha)!;
+
+      grupo.cantidadTrabajos += 1;
+      grupo.totalPrecio += trabajo.precio;
+      grupo.trabajos.push(trabajo);
+    });
+
+    const detalleDias = Array.from(mapaDetalleDias.values()).sort((a, b) =>
+      b.fecha.localeCompare(a.fecha)
+    );
+
     return NextResponse.json({
       status: "success",
-      clientes: clientes.map((c) => c.nombre),
+
+      filtros: {
+        desde,
+        hasta,
+        cliente,
+      },
+
+      clientes: clientes.map((item) => item.nombre),
+
       resumen: {
         trabajos: trabajos.length,
         trabajosAsignados: trabajos.length - trabajosPendientes.length,
@@ -214,7 +353,19 @@ export async function GET(request: NextRequest) {
         totalCostosOperativos,
         margenEstimado,
       },
+
       resumenDias,
+
+      /*
+       * Datos nuevos para la pantalla de detalle.
+       */
+      trabajosDetalle,
+      detalleDias,
+
+      /*
+       * Se mantienen temporalmente para no afectar
+       * ninguna pantalla que ya los esté consumiendo.
+       */
       trabajos,
       costosOperativos: costosAplicables,
     });
@@ -222,7 +373,10 @@ export async function GET(request: NextRequest) {
     console.error("Error al generar resumen financiero:", error);
 
     return NextResponse.json(
-      { status: "fail", message: "Error al generar resumen financiero" },
+      {
+        status: "fail",
+        message: "Error al generar resumen financiero",
+      },
       { status: 500 }
     );
   }
