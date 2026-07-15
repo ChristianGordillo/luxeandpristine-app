@@ -24,51 +24,72 @@ export async function GET(request: NextRequest) {
     const desde = searchParams.get("desde");
     const hasta = searchParams.get("hasta");
 
-    let where = {};
-
-    if (desde && hasta) {
-      const fechaDesde = crearFechaLocal(desde);
-      fechaDesde.setUTCHours(0, 0, 0, 0);
-
-      const fechaHasta = crearFechaLocal(hasta);
-      fechaHasta.setUTCHours(23, 59, 59, 999);
-
-      where = {
-        fecha: {
-          gte: fechaDesde,
-          lte: fechaHasta,
+    if ((desde && !hasta) || (!desde && hasta)) {
+      return NextResponse.json(
+        {
+          status: "fail",
+          message: "Debes enviar desde y hasta juntos",
         },
-      };
+        {
+          status: 400,
+        }
+      );
     }
+
+    const where =
+      desde && hasta
+        ? {
+            fecha: {
+              gte: (() => {
+                const fechaDesde = crearFechaLocal(desde);
+                fechaDesde.setUTCHours(0, 0, 0, 0);
+                return fechaDesde;
+              })(),
+
+              lte: (() => {
+                const fechaHasta = crearFechaLocal(hasta);
+                fechaHasta.setUTCHours(23, 59, 59, 999);
+                return fechaHasta;
+              })(),
+            },
+          }
+        : {};
 
     const trabajos = await prisma.lPTrabajoDiario.findMany({
       where,
+
       include: {
         unidad: {
           include: {
             cliente: true,
             edificio: true,
+
             trabajos: {
               where: {
                 incidenciaAbierta: true,
               },
+
               select: {
                 id: true,
                 fecha: true,
                 notas: true,
               },
+
               orderBy: {
                 fecha: "desc",
               },
             },
+
             ropaPendiente: {
               where: {
                 activo: true,
               },
+
               select: {
                 id: true,
                 createdAt: true,
               },
+
               orderBy: {
                 createdAt: "desc",
               },
@@ -76,21 +97,39 @@ export async function GET(request: NextRequest) {
           },
         },
       },
-      orderBy: [{ fecha: "desc" }, { createdAt: "desc" }],
-    });
 
-    const total = trabajos.reduce((acc, trabajo) => acc + trabajo.precio, 0);
+      orderBy: [
+        {
+          fecha: "asc",
+        },
+        {
+          createdAt: "asc",
+        },
+      ],
+    });
 
     const resumen = {
       cantidad: trabajos.length,
-      total,
+
+      total: trabajos.reduce(
+        (acc, trabajo) => acc + Number(trabajo.precio || 0),
+        0
+      ),
+
       limpiezaInicial: trabajos.filter(
-        (t) => t.tipo === "LIMPIEZA_INICIAL"
+        (trabajo) => trabajo.tipo === "LIMPIEZA_INICIAL"
       ).length,
-      limpieza: trabajos.filter((t) => t.tipo === "LIMPIEZA").length,
-      extra: trabajos.filter((t) => t.tipo === "EXTRA").length,
+
+      limpieza: trabajos.filter(
+        (trabajo) => trabajo.tipo === "LIMPIEZA"
+      ).length,
+
+      extra: trabajos.filter(
+        (trabajo) => trabajo.tipo === "EXTRA"
+      ).length,
+
       repasoLimpieza: trabajos.filter(
-        (t) => t.tipo === "REPASO_LIMPIEZA"
+        (trabajo) => trabajo.tipo === "REPASO_LIMPIEZA"
       ).length,
     };
 
@@ -98,13 +137,22 @@ export async function GET(request: NextRequest) {
       status: "success",
       trabajos,
       resumen,
+      rango: {
+        desde,
+        hasta,
+      },
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error al listar trabajos:", error);
 
     return NextResponse.json(
-      { status: "fail", message: "Error al listar trabajos" },
-      { status: 500 }
+      {
+        status: "fail",
+        message: "Error al listar trabajos",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
@@ -131,8 +179,13 @@ export async function POST(request: NextRequest) {
 
     if (!fecha || !tipo || precio === undefined) {
       return NextResponse.json(
-        { status: "fail", message: "Faltan datos obligatorios" },
-        { status: 400 }
+        {
+          status: "fail",
+          message: "Faltan datos obligatorios",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
@@ -142,14 +195,21 @@ export async function POST(request: NextRequest) {
           status: "fail",
           message: "Debes seleccionar una unidad o escribir una unidad manual",
         },
-        { status: 400 }
+        {
+          status: 400,
+        }
       );
     }
 
     if (!Object.values(LPTrabajoTipo).includes(tipo)) {
       return NextResponse.json(
-        { status: "fail", message: "Tipo de trabajo inválido" },
-        { status: 400 }
+        {
+          status: "fail",
+          message: "Tipo de trabajo inválido",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
@@ -167,32 +227,39 @@ export async function POST(request: NextRequest) {
         unidadId: tieneUnidadCatalogo ? Number(unidadId) : null,
         unidadManual: tieneUnidadCatalogo ? null : unidadManual.trim(),
       },
+
       include: {
         unidad: {
           include: {
             cliente: true,
             edificio: true,
+
             trabajos: {
               where: {
                 incidenciaAbierta: true,
               },
+
               select: {
                 id: true,
                 fecha: true,
                 notas: true,
               },
+
               orderBy: {
                 fecha: "desc",
               },
             },
+
             ropaPendiente: {
               where: {
                 activo: true,
               },
+
               select: {
                 id: true,
                 createdAt: true,
               },
+
               orderBy: {
                 createdAt: "desc",
               },
@@ -207,11 +274,16 @@ export async function POST(request: NextRequest) {
       trabajo,
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error al crear trabajo:", error);
 
     return NextResponse.json(
-      { status: "fail", message: "Error al crear trabajo" },
-      { status: 500 }
+      {
+        status: "fail",
+        message: "Error al crear trabajo",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
@@ -239,8 +311,13 @@ export async function PATCH(request: NextRequest) {
 
     if (!id || !fecha || !tipo || precio === undefined) {
       return NextResponse.json(
-        { status: "fail", message: "Faltan datos obligatorios" },
-        { status: 400 }
+        {
+          status: "fail",
+          message: "Faltan datos obligatorios",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
@@ -250,14 +327,21 @@ export async function PATCH(request: NextRequest) {
           status: "fail",
           message: "Debes seleccionar una unidad o escribir una unidad manual",
         },
-        { status: 400 }
+        {
+          status: 400,
+        }
       );
     }
 
     if (!Object.values(LPTrabajoTipo).includes(tipo)) {
       return NextResponse.json(
-        { status: "fail", message: "Tipo de trabajo inválido" },
-        { status: 400 }
+        {
+          status: "fail",
+          message: "Tipo de trabajo inválido",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
@@ -268,6 +352,7 @@ export async function PATCH(request: NextRequest) {
       where: {
         id: Number(id),
       },
+
       data: {
         fecha: fechaTrabajo,
         dia,
@@ -278,32 +363,39 @@ export async function PATCH(request: NextRequest) {
         unidadId: tieneUnidadCatalogo ? Number(unidadId) : null,
         unidadManual: tieneUnidadCatalogo ? null : unidadManual.trim(),
       },
+
       include: {
         unidad: {
           include: {
             cliente: true,
             edificio: true,
+
             trabajos: {
               where: {
                 incidenciaAbierta: true,
               },
+
               select: {
                 id: true,
                 fecha: true,
                 notas: true,
               },
+
               orderBy: {
                 fecha: "desc",
               },
             },
+
             ropaPendiente: {
               where: {
                 activo: true,
               },
+
               select: {
                 id: true,
                 createdAt: true,
               },
+
               orderBy: {
                 createdAt: "desc",
               },
@@ -318,11 +410,16 @@ export async function PATCH(request: NextRequest) {
       trabajo,
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error al actualizar trabajo:", error);
 
     return NextResponse.json(
-      { status: "fail", message: "Error al actualizar trabajo" },
-      { status: 500 }
+      {
+        status: "fail",
+        message: "Error al actualizar trabajo",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }
@@ -335,8 +432,13 @@ export async function DELETE(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json(
-        { status: "fail", message: "ID requerido" },
-        { status: 400 }
+        {
+          status: "fail",
+          message: "ID requerido",
+        },
+        {
+          status: 400,
+        }
       );
     }
 
@@ -351,11 +453,16 @@ export async function DELETE(request: NextRequest) {
       message: "Trabajo eliminado correctamente",
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error al eliminar trabajo:", error);
 
     return NextResponse.json(
-      { status: "fail", message: "Error al eliminar trabajo" },
-      { status: 500 }
+      {
+        status: "fail",
+        message: "Error al eliminar trabajo",
+      },
+      {
+        status: 500,
+      }
     );
   }
 }

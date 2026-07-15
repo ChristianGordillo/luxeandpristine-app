@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import RegistroCalendarioNav from "@/app/components/lp/RegistroCalendarioNav";
 
 type Unidad = {
   id: number;
@@ -358,7 +359,7 @@ export default function RegistroDiarioPage() {
           Paso 1: programación diaria de unidades y trabajos.
         </p>
       </div>
-
+      <RegistroCalendarioNav />
       <div className="bg-white border rounded-2xl shadow-sm p-4 sm:p-5 space-y-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="font-bold text-lp-navy">
