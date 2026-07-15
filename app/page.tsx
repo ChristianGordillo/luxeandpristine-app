@@ -11,6 +11,8 @@ import {
   Users,
 } from "lucide-react";
 
+const URL ="https://luxeandpristine.com";
+
 const WHATSAPP_URL =
   "https://wa.me/17864482284?text=Hello%20Luxe%20%26%20Pristine%2C%20I%20would%20like%20to%20learn%20more%20about%20your%20Cleaning%20Intelligence%20services.";
 
@@ -84,7 +86,7 @@ export default function Home() {
         <div className="relative mx-auto flex min-h-[680px] max-w-7xl flex-col px-6 py-8 sm:px-8 lg:px-12">
           <header className="flex items-center justify-between">
             <Link
-              href={WHATSAPP_URL}
+              href={URL}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-3"
