@@ -22,27 +22,29 @@ export default function ResumenNavigation() {
   return (
     <nav
       aria-label="Navegación del resumen financiero"
-      className="bg-white border rounded-2xl shadow-sm p-2"
+      className="rounded-2xl border bg-white p-2 shadow-sm"
     >
       <div className="grid grid-cols-2 gap-2">
         {opciones.map((opcion) => {
           const activo =
-            opcion.href === "/resumen"
-              ? pathname === "/resumen"
-              : pathname.startsWith(opcion.href);
+            opcion.href === "/dashboard/lp/resumen"
+              ? pathname === opcion.href
+              : pathname === opcion.href ||
+                pathname.startsWith(`${opcion.href}/`);
 
           return (
-          <Link
-            key={opcion.href}
-            href={opcion.href}
-            className={`rounded-xl border px-4 py-2 text-sm font-semibold transition ${
-              activo
-                ? "border-lp-navy bg-lp-navy text-white"
-                : "border-lp-navy/20 bg-white text-lp-navy hover:bg-lp-light"
-            }`}
-          >
-            {opcion.label}
-          </Link>
+            <Link
+              key={opcion.href}
+              href={opcion.href}
+              aria-current={activo ? "page" : undefined}
+              className={`rounded-xl border px-4 py-2 text-center text-sm font-semibold transition ${
+                activo
+                  ? "border-lp-navy bg-lp-navy text-white"
+                  : "border-lp-navy/20 bg-white text-lp-navy hover:bg-lp-light"
+              }`}
+            >
+              {opcion.label}
+            </Link>
           );
         })}
       </div>
