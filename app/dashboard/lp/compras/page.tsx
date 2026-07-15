@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import ProductoAutocomplete, {
+  type ProductoCompra,
+} from "@/app/components/lp/ProductoAutocomplete";
+import ComprasNav from "@/app/components/lp/ComprasNav";
 
 type Categoria =
   | "GASOLINA"
@@ -10,19 +14,25 @@ type Categoria =
   | "NOMINA"
   | "OTROS";
 
+type TipoPrecio = "UNITARIO" | "TOTAL";
+
 type Proveedor = {
   id: number;
   nombre: string;
 };
 
 type CompraItemForm = {
-  nombre: string;
+  producto: ProductoCompra | null;
+  nombreHistorico: string;
   cantidad: string;
-  precioBase: string;
+  valor: string;
+  tipoPrecio: TipoPrecio;
 };
 
 type CompraItem = {
   id: number;
+  productoId: number | null;
+  producto: ProductoCompra | null;
   nombre: string;
   cantidad: number;
   precioBase: number;
@@ -50,10 +60,19 @@ const categorias: { value: Categoria; label: string }[] = [
   { value: "OTROS", label: "Otros" },
 ];
 
+const crearItemVacio = (): CompraItemForm => ({
+  producto: null,
+  nombreHistorico: "",
+  cantidad: "1",
+  valor: "",
+  tipoPrecio: "UNITARIO",
+});
+
 function getTodayInputValue() {
   const today = new Date();
   const offset = today.getTimezoneOffset();
   const localDate = new Date(today.getTime() - offset * 60 * 1000);
+
   return localDate.toISOString().split("T")[0];
 }
 
@@ -74,7 +93,71 @@ function formatMoney(value: number) {
 }
 
 function categoriaLabel(categoria: Categoria) {
-  return categorias.find((c) => c.value === categoria)?.label || categoria;
+  return categorias.find((item) => item.value === categoria)?.label || categoria;
+}
+
+function redondearDinero(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function obtenerCantidad(item: CompraItemForm) {
+  const cantidad = Number(item.cantidad);
+
+  if (!Number.isFinite(cantidad) || cantidad <= 0) {
+    return 0;
+  }
+
+  return cantidad;
+}
+
+function obtenerValorIngresado(item: CompraItemForm) {
+  const valor = Number(item.valor);
+
+  if (!Number.isFinite(valor) || valor <= 0) {
+    return 0;
+  }
+
+  return valor;
+}
+
+function calcularTotalItem(item: CompraItemForm) {
+  const cantidad = obtenerCantidad(item);
+  const valor = obtenerValorIngresado(item);
+
+  if (item.tipoPrecio === "UNITARIO") {
+    return redondearDinero(cantidad * valor);
+  }
+
+  return redondearDinero(valor);
+}
+
+function calcularPrecioUnitario(item: CompraItemForm) {
+  const cantidad = obtenerCantidad(item);
+  const valor = obtenerValorIngresado(item);
+
+  if (item.tipoPrecio === "UNITARIO") {
+    return redondearDinero(valor);
+  }
+
+  if (cantidad <= 0) {
+    return 0;
+  }
+
+  return redondearDinero(valor / cantidad);
+}
+
+function construirEtiquetaProducto(producto: ProductoCompra | null) {
+  if (!producto) {
+    return "";
+  }
+
+  if (producto.etiqueta) {
+    return producto.etiqueta;
+  }
+
+  return [producto.nombre, producto.marca, producto.presentacion]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 export default function ComprasPage() {
@@ -92,9 +175,7 @@ export default function ComprasPage() {
 
   const [categoria, setCategoria] = useState<Categoria>("INSUMOS");
   const [taxes, setTaxes] = useState("");
-  const [items, setItems] = useState<CompraItemForm[]>([
-    { nombre: "", cantidad: "1", precioBase: "" },
-  ]);
+  const [items, setItems] = useState<CompraItemForm[]>([crearItemVacio()]);
 
   const [compras, setCompras] = useState<Compra[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +192,10 @@ export default function ComprasPage() {
         fetch("/api/lp/proveedores-compras"),
       ]);
 
+      if (!comprasRes.ok || !proveedoresRes.ok) {
+        throw new Error("No se pudo cargar la información.");
+      }
+
       const comprasData = await comprasRes.json();
       const proveedoresData = await proveedoresRes.json();
 
@@ -124,9 +209,19 @@ export default function ComprasPage() {
   };
 
   const fetchProveedores = async () => {
-    const res = await fetch("/api/lp/proveedores-compras");
-    const data = await res.json();
-    setProveedores(data.proveedores || []);
+    try {
+      const res = await fetch("/api/lp/proveedores-compras");
+
+      if (!res.ok) {
+        throw new Error("No se pudieron cargar los proveedores.");
+      }
+
+      const data = await res.json();
+
+      setProveedores(data.proveedores || []);
+    } catch (error) {
+      console.error("Error cargando proveedores:", error);
+    }
   };
 
   useEffect(() => {
@@ -134,22 +229,28 @@ export default function ComprasPage() {
   }, [desde, hasta]);
 
   const proveedoresFiltrados = useMemo(() => {
-    const q = proveedorBusqueda.trim().toLowerCase();
+    const query = proveedorBusqueda.trim().toLowerCase();
 
-    if (!q || proveedorSeleccionado) return [];
+    if (!query || proveedorSeleccionado) {
+      return [];
+    }
 
     return proveedores
-      .filter((proveedor) => proveedor.nombre.toLowerCase().includes(q))
+      .filter((proveedor) =>
+        proveedor.nombre.toLowerCase().includes(query)
+      )
       .slice(0, 8);
   }, [proveedorBusqueda, proveedores, proveedorSeleccionado]);
 
   const proveedorExisteExacto = useMemo(() => {
-    const q = proveedorBusqueda.trim().toLowerCase();
+    const query = proveedorBusqueda.trim().toLowerCase();
 
-    if (!q) return false;
+    if (!query) {
+      return false;
+    }
 
     return proveedores.some(
-      (proveedor) => proveedor.nombre.trim().toLowerCase() === q
+      (proveedor) => proveedor.nombre.trim().toLowerCase() === query
     );
   }, [proveedorBusqueda, proveedores]);
 
@@ -159,18 +260,50 @@ export default function ComprasPage() {
     !proveedorExisteExacto;
 
   const subtotal = useMemo(() => {
-    return items.reduce((acc, item) => acc + Number(item.precioBase || 0), 0);
+    const resultado = items.reduce(
+      (acumulado, item) => acumulado + calcularTotalItem(item),
+      0
+    );
+
+    return redondearDinero(resultado);
   }, [items]);
 
-  const taxesNumber = Number(taxes || 0);
-  const total = subtotal + taxesNumber;
+  const taxesNumber = useMemo(() => {
+    const valor = Number(taxes);
+
+    if (!Number.isFinite(valor) || valor < 0) {
+      return 0;
+    }
+
+    return redondearDinero(valor);
+  }, [taxes]);
+
+  const total = redondearDinero(subtotal + taxesNumber);
 
   const resumen = useMemo(() => {
     return {
       cantidad: compras.length,
-      subtotal: compras.reduce((acc, compra) => acc + compra.subtotal, 0),
-      taxes: compras.reduce((acc, compra) => acc + compra.taxes, 0),
-      total: compras.reduce((acc, compra) => acc + compra.total, 0),
+
+      subtotal: redondearDinero(
+        compras.reduce(
+          (acumulado, compra) => acumulado + Number(compra.subtotal || 0),
+          0
+        )
+      ),
+
+      taxes: redondearDinero(
+        compras.reduce(
+          (acumulado, compra) => acumulado + Number(compra.taxes || 0),
+          0
+        )
+      ),
+
+      total: redondearDinero(
+        compras.reduce(
+          (acumulado, compra) => acumulado + Number(compra.total || 0),
+          0
+        )
+      ),
     };
   }, [compras]);
 
@@ -180,7 +313,7 @@ export default function ComprasPage() {
     setProveedorSeleccionado(null);
     setCategoria("INSUMOS");
     setTaxes("");
-    setItems([{ nombre: "", cantidad: "1", precioBase: "" }]);
+    setItems([crearItemVacio()]);
     setEditandoId(null);
   };
 
@@ -217,34 +350,97 @@ export default function ComprasPage() {
 
       await fetchProveedores();
     } catch (error) {
-      console.error(error);
+      console.error("Error creando proveedor:", error);
       alert("Error al crear proveedor.");
     } finally {
       setCreatingProveedor(false);
     }
   };
 
-  const actualizarItem = (
+  const actualizarItem = <K extends keyof CompraItemForm>(
     index: number,
-    field: keyof CompraItemForm,
-    value: string
+    field: K,
+    value: CompraItemForm[K]
   ) => {
     setItems((prev) =>
-      prev.map((item, i) => (i === index ? { ...item, [field]: value } : item))
+      prev.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              ...item,
+              [field]: value,
+            }
+          : item
+      )
+    );
+  };
+
+  const seleccionarProducto = (
+    index: number,
+    producto: ProductoCompra | null
+  ) => {
+    setItems((prev) =>
+      prev.map((item, itemIndex) =>
+        itemIndex === index
+          ? {
+              ...item,
+              producto,
+              nombreHistorico: producto ? "" : item.nombreHistorico,
+            }
+          : item
+      )
+    );
+  };
+
+  const cambiarTipoPrecio = (index: number, nuevoTipo: TipoPrecio) => {
+    setItems((prev) =>
+      prev.map((item, itemIndex) => {
+        if (itemIndex !== index || item.tipoPrecio === nuevoTipo) {
+          return item;
+        }
+
+        if (!item.valor.trim()) {
+          return {
+            ...item,
+            tipoPrecio: nuevoTipo,
+          };
+        }
+
+        const cantidad = obtenerCantidad(item);
+        const totalActual = calcularTotalItem(item);
+
+        if (nuevoTipo === "TOTAL") {
+          return {
+            ...item,
+            tipoPrecio: "TOTAL",
+            valor: totalActual > 0 ? String(totalActual) : "",
+          };
+        }
+
+        const precioUnitario =
+          cantidad > 0
+            ? redondearDinero(totalActual / cantidad)
+            : 0;
+
+        return {
+          ...item,
+          tipoPrecio: "UNITARIO",
+          valor: precioUnitario > 0 ? String(precioUnitario) : "",
+        };
+      })
     );
   };
 
   const agregarItem = () => {
-    setItems((prev) => [
-      ...prev,
-      { nombre: "", cantidad: "1", precioBase: "" },
-    ]);
+    setItems((prev) => [...prev, crearItemVacio()]);
   };
 
   const eliminarItem = (index: number) => {
     setItems((prev) => {
-      if (prev.length === 1) return prev;
-      return prev.filter((_, i) => i !== index);
+      if (prev.length === 1) {
+        return prev;
+      }
+
+      return prev.filter((_, itemIndex) => itemIndex !== index);
     });
   };
 
@@ -254,18 +450,24 @@ export default function ComprasPage() {
     setProveedorSeleccionado(compra.proveedor);
     setProveedorBusqueda(compra.proveedor.nombre);
     setCategoria(compra.categoria);
-    setTaxes(String(compra.taxes || ""));
+    setTaxes(compra.taxes ? String(compra.taxes) : "");
+
     setItems(
       compra.items.length > 0
         ? compra.items.map((item) => ({
-            nombre: item.nombre,
-            cantidad: String(item.cantidad),
-            precioBase: String(item.precioBase),
+            producto: item.producto || null,
+            nombreHistorico: item.producto ? "" : item.nombre,
+            cantidad: String(item.cantidad || 1),
+            valor: String(item.precioBase || ""),
+            tipoPrecio: "TOTAL" as TipoPrecio,
           }))
-        : [{ nombre: "", cantidad: "1", precioBase: "" }]
+        : [crearItemVacio()]
     );
 
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
   };
 
   const guardarCompra = async () => {
@@ -274,12 +476,64 @@ export default function ComprasPage() {
       return;
     }
 
-    const itemsValidos = items.filter(
-      (item) => item.nombre.trim() && Number(item.precioBase || 0) > 0
+    const lineasConInformacion = items.filter((item) => {
+      return (
+        item.producto !== null ||
+        Boolean(item.nombreHistorico) ||
+        Boolean(item.valor.trim()) ||
+        item.cantidad.trim() !== "1"
+      );
+    });
+
+    if (lineasConInformacion.length === 0) {
+      alert("Agrega al menos un producto o concepto.");
+      return;
+    }
+
+    const itemSinProducto = lineasConInformacion.find(
+      (item) => !item.producto
+    );
+
+    if (itemSinProducto) {
+      alert(
+        itemSinProducto.nombreHistorico
+          ? `Debes asociar "${itemSinProducto.nombreHistorico}" con un producto del catálogo antes de guardar.`
+          : "Selecciona un producto o concepto en cada línea."
+      );
+      return;
+    }
+
+    const itemConCantidadInvalida = lineasConInformacion.find(
+      (item) => obtenerCantidad(item) <= 0
+    );
+
+    if (itemConCantidadInvalida) {
+      alert("La cantidad de cada producto debe ser mayor que cero.");
+      return;
+    }
+
+    const itemConValorInvalido = lineasConInformacion.find(
+      (item) => obtenerValorIngresado(item) <= 0
+    );
+
+    if (itemConValorInvalido) {
+      alert("El valor de cada producto debe ser mayor que cero.");
+      return;
+    }
+
+    const itemsValidos = lineasConInformacion.filter(
+      (
+        item
+      ): item is CompraItemForm & {
+        producto: ProductoCompra;
+      } =>
+        item.producto !== null &&
+        obtenerCantidad(item) > 0 &&
+        calcularTotalItem(item) > 0
     );
 
     if (itemsValidos.length === 0) {
-      alert("Agrega al menos un producto con precio.");
+      alert("Agrega al menos un producto válido.");
       return;
     }
 
@@ -297,10 +551,12 @@ export default function ComprasPage() {
           proveedorId: proveedorSeleccionado.id,
           categoria,
           taxes: taxesNumber,
+
           items: itemsValidos.map((item) => ({
-            nombre: item.nombre.trim(),
-            cantidad: Number(item.cantidad || 1),
-            precioBase: Number(item.precioBase || 0),
+            productoId: item.producto.id,
+            nombre: item.producto.nombre,
+            cantidad: obtenerCantidad(item),
+            precioBase: calcularTotalItem(item),
           })),
         }),
       });
@@ -315,7 +571,7 @@ export default function ComprasPage() {
       limpiarFormulario();
       await fetchData();
     } catch (error) {
-      console.error(error);
+      console.error("Error guardando compra:", error);
       alert("Error al guardar compra.");
     } finally {
       setSaving(false);
@@ -324,7 +580,10 @@ export default function ComprasPage() {
 
   const eliminarCompra = async (id: number) => {
     const confirmar = confirm("¿Eliminar esta compra?");
-    if (!confirmar) return;
+
+    if (!confirmar) {
+      return;
+    }
 
     try {
       setDeletingId(id);
@@ -333,8 +592,10 @@ export default function ComprasPage() {
         method: "DELETE",
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        alert("Error al eliminar compra.");
+        alert(data.message || "Error al eliminar compra.");
         return;
       }
 
@@ -344,7 +605,7 @@ export default function ComprasPage() {
 
       await fetchData();
     } catch (error) {
-      console.error(error);
+      console.error("Error eliminando compra:", error);
       alert("Error al eliminar compra.");
     } finally {
       setDeletingId(null);
@@ -358,37 +619,43 @@ export default function ComprasPage() {
   return (
     <div className="space-y-5 pb-24">
       <div>
-        <h1 className="text-2xl font-bold text-lp-navy">Compras</h1>
-        <p className="text-sm text-lp-navy/70 mt-1">
-          Control de gastos, proveedores y costo real de productos con taxes.
+        <h1 className="text-2xl font-bold text-lp-navy">
+          Compras
+        </h1>
+        <ComprasNav />
+        <p className="mt-1 text-sm text-lp-navy/70">
+          Registra compras y gastos usando un catálogo normalizado.
         </p>
       </div>
 
-      <div className="bg-white border rounded-2xl shadow-sm p-4 space-y-4">
+      <div className="space-y-4 rounded-2xl border bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-bold text-lp-navy">
             {editandoId ? "Editar compra" : "Registrar compra"}
           </h2>
 
           {editandoId && (
-            <span className="text-xs font-bold bg-lp-gold/20 text-lp-navy px-3 py-1 rounded-full">
+            <span className="rounded-full bg-lp-gold/20 px-3 py-1 text-xs font-bold text-lp-navy">
               Editando
             </span>
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-lp-navy">Fecha</label>
+            <label className="text-xs font-semibold text-lp-navy">
+              Fecha
+            </label>
+
             <input
               type="date"
               value={fecha}
-              onChange={(e) => setFecha(e.target.value)}
-              className="w-full border rounded-xl p-3 text-lp-navy bg-white"
+              onChange={(event) => setFecha(event.target.value)}
+              className="w-full rounded-xl border bg-white p-3 text-lp-navy"
             />
           </div>
 
-          <div className="space-y-1 relative">
+          <div className="relative space-y-1">
             <label className="text-xs font-semibold text-lp-navy">
               Proveedor
             </label>
@@ -396,12 +663,13 @@ export default function ComprasPage() {
             <input
               type="text"
               value={proveedorBusqueda}
-              onChange={(e) => {
-                setProveedorBusqueda(e.target.value);
+              onChange={(event) => {
+                setProveedorBusqueda(event.target.value);
                 setProveedorSeleccionado(null);
               }}
               placeholder="Buscar o crear proveedor..."
-              className="w-full border rounded-xl p-3 pr-10 text-lp-navy bg-white"
+              autoComplete="off"
+              className="w-full rounded-xl border bg-white p-3 pr-10 text-lp-navy"
             />
 
             {proveedorBusqueda && (
@@ -412,13 +680,14 @@ export default function ComprasPage() {
                   setProveedorSeleccionado(null);
                 }}
                 className="absolute right-3 top-[38px] text-lp-navy/50"
+                aria-label="Limpiar proveedor"
               >
                 ✕
               </button>
             )}
 
             {(proveedoresFiltrados.length > 0 || puedeCrearProveedor) && (
-              <div className="absolute z-30 mt-2 w-full bg-white border rounded-xl shadow-lg overflow-hidden">
+              <div className="absolute z-30 mt-2 w-full overflow-hidden rounded-xl border bg-white shadow-lg">
                 {proveedoresFiltrados.map((proveedor) => (
                   <button
                     key={proveedor.id}
@@ -427,7 +696,7 @@ export default function ComprasPage() {
                       setProveedorSeleccionado(proveedor);
                       setProveedorBusqueda(proveedor.nombre);
                     }}
-                    className="w-full text-left px-4 py-3 hover:bg-lp-light border-b last:border-b-0"
+                    className="w-full border-b px-4 py-3 text-left last:border-b-0 hover:bg-lp-light"
                   >
                     <p className="text-sm font-semibold text-lp-navy">
                       {proveedor.nombre}
@@ -440,13 +709,14 @@ export default function ComprasPage() {
                     type="button"
                     onClick={crearProveedorRapido}
                     disabled={creatingProveedor}
-                    className="w-full text-left px-4 py-3 bg-lp-light hover:bg-lp-gold/20 text-lp-navy"
+                    className="w-full bg-lp-light px-4 py-3 text-left text-lp-navy hover:bg-lp-gold/20 disabled:opacity-60"
                   >
                     <p className="text-sm font-bold">
                       {creatingProveedor
                         ? "Creando proveedor..."
                         : `+ Crear "${proveedorBusqueda.trim()}"`}
                     </p>
+
                     <p className="text-xs text-lp-navy/60">
                       Se guardará y quedará seleccionado.
                     </p>
@@ -460,14 +730,17 @@ export default function ComprasPage() {
             <label className="text-xs font-semibold text-lp-navy">
               Categoría
             </label>
+
             <select
               value={categoria}
-              onChange={(e) => setCategoria(e.target.value as Categoria)}
-              className="w-full border rounded-xl p-3 text-lp-navy bg-white"
+              onChange={(event) =>
+                setCategoria(event.target.value as Categoria)
+              }
+              className="w-full rounded-xl border bg-white p-3 text-lp-navy"
             >
-              {categorias.map((cat) => (
-                <option key={cat.value} value={cat.value}>
-                  {cat.label}
+              {categorias.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
                 </option>
               ))}
             </select>
@@ -475,8 +748,11 @@ export default function ComprasPage() {
         </div>
 
         {proveedorSeleccionado && (
-          <div className="bg-lp-light border rounded-xl p-3">
-            <p className="text-xs text-lp-navy/60">Proveedor seleccionado</p>
+          <div className="rounded-xl border bg-lp-light p-3">
+            <p className="text-xs text-lp-navy/60">
+              Proveedor seleccionado
+            </p>
+
             <p className="text-sm font-bold text-lp-navy">
               {proveedorSeleccionado.nombre}
             </p>
@@ -485,99 +761,218 @@ export default function ComprasPage() {
 
         <div className="space-y-3">
           <div>
-            <h3 className="font-bold text-lp-navy">Productos</h3>
+            <h3 className="font-bold text-lp-navy">
+              Productos o conceptos
+            </h3>
+
             <p className="text-xs text-lp-navy/60">
-              Ingresa el valor de cada línea antes de taxes.
+              Selecciona un producto del catálogo o créalo sin salir del
+              registro.
             </p>
           </div>
 
-          {items.map((item, index) => (
-            <div
-              key={index}
-              className="border rounded-2xl p-3 space-y-3 bg-lp-light/40"
-            >
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-lp-navy">
-                  Producto
-                </label>
-                <input
-                  value={item.nombre}
-                  onChange={(e) =>
-                    actualizarItem(index, "nombre", e.target.value)
-                  }
-                  placeholder="Ej: Clorox, trash bags, detergent..."
-                  className="w-full border rounded-xl p-3 text-lp-navy bg-white"
-                />
-              </div>
+          {items.map((item, index) => {
+            const precioUnitario = calcularPrecioUnitario(item);
+            const totalItem = calcularTotalItem(item);
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-lp-navy">
-                    Cantidad
-                  </label>
-                  <input
-                    type="number"
-                    value={item.cantidad}
-                    onChange={(e) =>
-                      actualizarItem(index, "cantidad", e.target.value)
-                    }
-                    className="w-full border rounded-xl p-3 text-lp-navy bg-white"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-lp-navy">
-                    Precio base
-                  </label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={item.precioBase}
-                    onChange={(e) =>
-                      actualizarItem(index, "precioBase", e.target.value)
-                    }
-                    placeholder="0.00"
-                    className="w-full border rounded-xl p-3 text-lp-navy bg-white"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => eliminarItem(index)}
-                disabled={items.length === 1}
-                className="w-full border border-red-500 text-red-500 rounded-xl px-4 py-2 text-sm disabled:opacity-40"
+            return (
+              <div
+                key={index}
+                className="space-y-3 rounded-2xl border bg-lp-light/40 p-3"
               >
-                Eliminar producto
-              </button>
-            </div>
-          ))}
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-lp-navy/50">
+                    Línea {index + 1}
+                  </p>
+
+                  {items.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => eliminarItem(index)}
+                      className="text-xs font-semibold text-red-500"
+                    >
+                      Eliminar
+                    </button>
+                  )}
+                </div>
+
+                {item.nombreHistorico && !item.producto && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+                    <p className="text-xs font-semibold text-amber-800">
+                      Producto histórico sin normalizar
+                    </p>
+
+                    <p className="mt-1 text-sm font-bold text-amber-900">
+                      {item.nombreHistorico}
+                    </p>
+
+                    <p className="mt-1 text-xs text-amber-700">
+                      Busca o crea el producto correcto para asociar esta
+                      compra al catálogo.
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-lp-navy">
+                    Producto o concepto
+                  </label>
+
+                  <ProductoAutocomplete
+                    value={item.producto}
+                    onChange={(producto) =>
+                      seleccionarProducto(index, producto)
+                    }
+                    placeholder={
+                      item.nombreHistorico
+                        ? `Buscar equivalente de ${item.nombreHistorico}...`
+                        : "Buscar producto o concepto..."
+                    }
+                    disabled={saving}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-lp-navy">
+                      Cantidad
+                    </label>
+
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={item.cantidad}
+                      onChange={(event) =>
+                        actualizarItem(
+                          index,
+                          "cantidad",
+                          event.target.value
+                        )
+                      }
+                      onWheel={(event) => event.currentTarget.blur()}
+                      disabled={saving}
+                      className="w-full rounded-xl border bg-white p-3 text-lp-navy disabled:opacity-60"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-lp-navy">
+                      ¿Qué valor tienes?
+                    </label>
+
+                    <select
+                      value={item.tipoPrecio}
+                      onChange={(event) =>
+                        cambiarTipoPrecio(
+                          index,
+                          event.target.value as TipoPrecio
+                        )
+                      }
+                      disabled={saving}
+                      className="w-full rounded-xl border bg-white p-3 text-lp-navy disabled:opacity-60"
+                    >
+                      <option value="UNITARIO">
+                        Precio unitario
+                      </option>
+
+                      <option value="TOTAL">
+                        Total de la línea
+                      </option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-lp-navy">
+                      {item.tipoPrecio === "UNITARIO"
+                        ? "Precio por unidad"
+                        : "Valor total"}
+                    </label>
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      value={item.valor}
+                      onChange={(event) =>
+                        actualizarItem(index, "valor", event.target.value)
+                      }
+                      onFocus={(event) => event.currentTarget.select()}
+                      onWheel={(event) => event.currentTarget.blur()}
+                      disabled={saving}
+                      placeholder="0.00"
+                      className="w-full rounded-xl border bg-white p-3 text-lp-navy disabled:opacity-60"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border bg-white p-3">
+                    <p className="text-xs text-lp-navy/60">
+                      Precio unitario
+                    </p>
+
+                    <p className="text-base font-bold text-lp-navy">
+                      {formatMoney(precioUnitario)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border bg-white p-3">
+                    <p className="text-xs text-lp-navy/60">
+                      Total de la línea
+                    </p>
+
+                    <p className="text-base font-bold text-lp-navy">
+                      {formatMoney(totalItem)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           <button
             type="button"
             onClick={agregarItem}
-            className="w-full border border-lp-navy text-lp-navy rounded-xl px-4 py-3 font-semibold"
+            disabled={saving}
+            className="w-full rounded-xl border border-lp-navy px-4 py-3 font-semibold text-lp-navy disabled:opacity-60"
           >
-            + Agregar producto
+            + Agregar otro producto
           </button>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <ResumenCard label="Subtotal" value={formatMoney(subtotal)} />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <ResumenCard
+            label="Subtotal"
+            value={formatMoney(subtotal)}
+          />
 
-          <div className="bg-lp-light rounded-xl p-3">
-            <p className="text-xs text-lp-navy/60">Taxes</p>
+          <div className="rounded-xl bg-lp-light p-3">
+            <p className="text-xs text-lp-navy/60">
+              Taxes
+            </p>
+
             <input
               type="number"
+              min="0"
               step="0.01"
+              inputMode="decimal"
               value={taxes}
-              onChange={(e) => setTaxes(e.target.value)}
+              onChange={(event) => setTaxes(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
+              onWheel={(event) => event.currentTarget.blur()}
+              disabled={saving}
               placeholder="0.00"
-              className="mt-1 w-full border rounded-xl p-2 text-lp-navy bg-white"
+              className="mt-1 w-full rounded-xl border bg-white p-2 text-lp-navy disabled:opacity-60"
             />
           </div>
 
-          <ResumenCard label="Total" value={formatMoney(total)} />
+          <ResumenCard
+            label="Total"
+            value={formatMoney(total)}
+          />
         </div>
 
         <div className="grid grid-cols-1 gap-3">
@@ -585,20 +980,21 @@ export default function ComprasPage() {
             type="button"
             onClick={guardarCompra}
             disabled={saving}
-            className="w-full bg-lp-gold text-white rounded-xl font-semibold px-4 py-3 disabled:opacity-60"
+            className="w-full rounded-xl bg-lp-gold px-4 py-3 font-semibold text-white disabled:opacity-60"
           >
             {saving
               ? "Guardando..."
               : editandoId
-              ? "Actualizar compra"
-              : "Guardar compra"}
+                ? "Actualizar compra"
+                : "Guardar compra"}
           </button>
 
           {editandoId && (
             <button
               type="button"
               onClick={limpiarFormulario}
-              className="w-full border border-lp-navy text-lp-navy rounded-xl font-semibold px-4 py-3 bg-white"
+              disabled={saving}
+              className="w-full rounded-xl border border-lp-navy bg-white px-4 py-3 font-semibold text-lp-navy disabled:opacity-60"
             >
               Cancelar edición
             </button>
@@ -606,41 +1002,64 @@ export default function ComprasPage() {
         </div>
       </div>
 
-      <div className="bg-white border rounded-2xl shadow-sm p-4 space-y-4">
-        <h2 className="font-bold text-lp-navy">Filtro</h2>
+      <div className="space-y-4 rounded-2xl border bg-white p-4 shadow-sm">
+        <h2 className="font-bold text-lp-navy">
+          Filtro
+        </h2>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-lp-navy">Desde</label>
+            <label className="text-xs font-semibold text-lp-navy">
+              Desde
+            </label>
+
             <input
               type="date"
               value={desde}
-              onChange={(e) => setDesde(e.target.value)}
-              className="w-full border rounded-xl p-3 text-lp-navy bg-white"
+              onChange={(event) => setDesde(event.target.value)}
+              className="w-full rounded-xl border bg-white p-3 text-lp-navy"
             />
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-lp-navy">Hasta</label>
+            <label className="text-xs font-semibold text-lp-navy">
+              Hasta
+            </label>
+
             <input
               type="date"
               value={hasta}
-              onChange={(e) => setHasta(e.target.value)}
-              className="w-full border rounded-xl p-3 text-lp-navy bg-white"
+              onChange={(event) => setHasta(event.target.value)}
+              className="w-full rounded-xl border bg-white p-3 text-lp-navy"
             />
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <ResumenCard label="Compras" value={resumen.cantidad} />
-          <ResumenCard label="Subtotal" value={formatMoney(resumen.subtotal)} />
-          <ResumenCard label="Taxes" value={formatMoney(resumen.taxes)} />
-          <ResumenCard label="Total" value={formatMoney(resumen.total)} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <ResumenCard
+            label="Compras"
+            value={resumen.cantidad}
+          />
+
+          <ResumenCard
+            label="Subtotal"
+            value={formatMoney(resumen.subtotal)}
+          />
+
+          <ResumenCard
+            label="Taxes"
+            value={formatMoney(resumen.taxes)}
+          />
+
+          <ResumenCard
+            label="Total"
+            value={formatMoney(resumen.total)}
+          />
         </div>
       </div>
 
       {compras.length === 0 ? (
-        <div className="bg-white border rounded-2xl shadow-sm p-5 text-sm text-lp-navy/70">
+        <div className="rounded-2xl border bg-white p-5 text-sm text-lp-navy/70 shadow-sm">
           No hay compras en este rango.
         </div>
       ) : (
@@ -648,11 +1067,12 @@ export default function ComprasPage() {
           {compras.map((compra) => (
             <section
               key={compra.id}
-              className="bg-white border rounded-2xl shadow-sm overflow-hidden"
+              className="overflow-hidden rounded-2xl border bg-white shadow-sm"
             >
-              <div className="p-4 bg-lp-light border-b space-y-1">
+              <div className="space-y-1 border-b bg-lp-light p-4">
                 <p className="text-xs text-lp-navy/60">
-                  {formatDate(compra.fecha)} · {categoriaLabel(compra.categoria)}
+                  {formatDate(compra.fecha)} ·{" "}
+                  {categoriaLabel(compra.categoria)}
                 </p>
 
                 <h2 className="text-xl font-bold text-lp-navy">
@@ -668,37 +1088,61 @@ export default function ComprasPage() {
                 </p>
               </div>
 
-              <div className="p-4 space-y-3">
-                {compra.items.map((item) => (
-                  <div
-                    key={item.id}
-                    className="border rounded-xl p-3 bg-white space-y-1"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-bold text-lp-navy">{item.nombre}</p>
-                        <p className="text-xs text-lp-navy/60">
-                          Cantidad: {item.cantidad}
+              <div className="space-y-3 p-4">
+                {compra.items.map((item) => {
+                  const precioUnitario =
+                    item.cantidad > 0
+                      ? redondearDinero(
+                          Number(item.precioBase || 0) / item.cantidad
+                        )
+                      : 0;
+
+                  const nombreProducto =
+                    construirEtiquetaProducto(item.producto) ||
+                    item.nombre;
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="space-y-2 rounded-xl border bg-white p-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-bold text-lp-navy">
+                            {nombreProducto}
+                          </p>
+
+                          <p className="text-xs text-lp-navy/60">
+                            {item.cantidad} unidad
+                            {item.cantidad === 1 ? "" : "es"} ×{" "}
+                            {formatMoney(precioUnitario)}
+                          </p>
+
+                          {!item.productoId && (
+                            <p className="mt-1 text-xs font-semibold text-amber-600">
+                              Pendiente de normalizar
+                            </p>
+                          )}
+                        </div>
+
+                        <p className="text-sm font-bold text-lp-navy">
+                          {formatMoney(item.precioFinal)}
                         </p>
                       </div>
 
-                      <p className="text-sm font-bold text-lp-navy">
-                        {formatMoney(item.precioFinal)}
+                      <p className="text-xs text-lp-navy/60">
+                        Base {formatMoney(item.precioBase)} + Tax asignado{" "}
+                        {formatMoney(item.taxAsignado)}
                       </p>
                     </div>
-
-                    <p className="text-xs text-lp-navy/60">
-                      Base {formatMoney(item.precioBase)} + Tax asignado{" "}
-                      {formatMoney(item.taxAsignado)}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
 
                 <div className="grid grid-cols-2 gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => cargarCompraParaEditar(compra)}
-                    className="w-full border border-lp-navy text-lp-navy rounded-xl font-semibold px-4 py-3 bg-white"
+                    className="w-full rounded-xl border border-lp-navy bg-white px-4 py-3 font-semibold text-lp-navy"
                   >
                     Editar
                   </button>
@@ -707,9 +1151,11 @@ export default function ComprasPage() {
                     type="button"
                     onClick={() => eliminarCompra(compra.id)}
                     disabled={deletingId === compra.id}
-                    className="w-full border border-red-500 text-red-500 rounded-xl font-semibold px-4 py-3 disabled:opacity-60"
+                    className="w-full rounded-xl border border-red-500 px-4 py-3 font-semibold text-red-500 disabled:opacity-60"
                   >
-                    {deletingId === compra.id ? "Eliminando..." : "Eliminar"}
+                    {deletingId === compra.id
+                      ? "Eliminando..."
+                      : "Eliminar"}
                   </button>
                 </div>
               </div>
@@ -729,9 +1175,14 @@ function ResumenCard({
   value: string | number;
 }) {
   return (
-    <div className="bg-lp-light rounded-xl p-3 min-w-0">
-      <p className="text-xs text-lp-navy/60 truncate">{label}</p>
-      <p className="text-xl font-bold text-lp-navy truncate">{value}</p>
+    <div className="min-w-0 rounded-xl bg-lp-light p-3">
+      <p className="truncate text-xs text-lp-navy/60">
+        {label}
+      </p>
+
+      <p className="truncate text-xl font-bold text-lp-navy">
+        {value}
+      </p>
     </div>
   );
 }

@@ -1,0 +1,14 @@
+SELECT setval(pg_get_serial_sequence('"LPTrabajoDiario"', 'id'), COALESCE((SELECT MAX(id) FROM "LPTrabajoDiario"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPAsignacionTrabajo"', 'id'), COALESCE((SELECT MAX(id) FROM "LPAsignacionTrabajo"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPProgramacionTrabajo"', 'id'), COALESCE((SELECT MAX(id) FROM "LPProgramacionTrabajo"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPRopaPendiente"', 'id'), COALESCE((SELECT MAX(id) FROM "LPRopaPendiente"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPRopaManchada"', 'id'), COALESCE((SELECT MAX(id) FROM "LPRopaManchada"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPCompra"', 'id'), COALESCE((SELECT MAX(id) FROM "LPCompra"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPCompraItem"', 'id'), COALESCE((SELECT MAX(id) FROM "LPCompraItem"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPUnidad"', 'id'), COALESCE((SELECT MAX(id) FROM "LPUnidad"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPCleaner"', 'id'), COALESCE((SELECT MAX(id) FROM "LPCleaner"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPEdificio"', 'id'), COALESCE((SELECT MAX(id) FROM "LPEdificio"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPCliente"', 'id'), COALESCE((SELECT MAX(id) FROM "LPCliente"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPProveedorCompra"', 'id'), COALESCE((SELECT MAX(id) FROM "LPProveedorCompra"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPCostoOperativoDiario"', 'id'), COALESCE((SELECT MAX(id) FROM "LPCostoOperativoDiario"), 1), true);
+SELECT setval(pg_get_serial_sequence('"LPPagoPeriodo"', 'id'), COALESCE((SELECT MAX(id) FROM "LPPagoPeriodo"), 1), true);
