@@ -57,11 +57,9 @@ model LPCliente {
   email    String?
   activo   Boolean @default(true)
 
-  usaSaldoAnticipado Boolean   @default(false)
-  fechaInicioSaldo   DateTime?
-
   unidades               LPUnidad[]
   movimientosFinancieros LPMovimientoCliente[]
+  ciclosFinancieros      LPCicloCliente[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -344,15 +342,18 @@ enum LPMovimientoClienteTipo {
 }
 
 model LPMovimientoCliente {
-  id        Int                     @id @default(autoincrement())
-  clienteId Int
-  fecha     DateTime
-  tipo      LPMovimientoClienteTipo
-  valor     Decimal                 @db.Decimal(10, 2)
-  concepto  String
-  notas     String?
+  id         Int                     @id @default(autoincrement())
+  clienteId  Int
+  fecha      DateTime
+  tipo       LPMovimientoClienteTipo
+  valor      Decimal                 @db.Decimal(10, 2)
+  concepto   String
+  referencia String?
+  notas      String?
 
   cliente LPCliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  aplicacionesPago LPAplicacionPagoCliente[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -360,4 +361,60 @@ model LPMovimientoCliente {
   @@index([clienteId])
   @@index([fecha])
   @@index([clienteId, fecha])
+  @@index([tipo])
+}
+
+enum LPCicloClienteTipo {
+  DIARIO
+  SEMANAL
+  QUINCENAL
+  MENSUAL
+  PERSONALIZADO
+}
+
+model LPCicloCliente {
+  id Int @id @default(autoincrement())
+
+  clienteId Int
+  cliente   LPCliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  tipo LPCicloClienteTipo
+
+  fechaInicio DateTime
+  fechaFin    DateTime
+
+  concepto String?
+  notas    String?
+
+  aplicacionesPago LPAplicacionPagoCliente[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([clienteId, fechaInicio, fechaFin])
+  @@index([clienteId])
+  @@index([fechaInicio])
+  @@index([fechaFin])
+  @@index([clienteId, fechaInicio, fechaFin])
+}
+
+model LPAplicacionPagoCliente {
+  id Int @id @default(autoincrement())
+
+  movimientoId Int
+  movimiento   LPMovimientoCliente @relation(fields: [movimientoId], references: [id], onDelete: Cascade)
+
+  cicloId Int
+  ciclo   LPCicloCliente @relation(fields: [cicloId], references: [id], onDelete: Cascade)
+
+  valorAplicado Decimal @db.Decimal(10, 2)
+
+  notas String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([movimientoId, cicloId])
+  @@index([movimientoId])
+  @@index([cicloId])
 }
