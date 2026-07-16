@@ -1,53 +1,27 @@
-"use client";
-
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import LPTabs from "@/app/components/lp/LPTabs";
 
 const opciones = [
   {
     label: "Resumen general",
     href: "/dashboard/lp/resumen",
-    descripcion: "Totales, costos y utilidad",
   },
   {
     label: "Detalle de trabajos",
     href: "/dashboard/lp/resumen/detalle",
-    descripcion: "Unidades, tipos y precios",
+    match: "section" as const,
+  },
+  {
+    label: "Saldos clientes",
+    href: "/dashboard/lp/saldos-clientes",
+    match: "section" as const,
   },
 ];
 
 export default function ResumenNavigation() {
-  const pathname = usePathname();
-
   return (
-    <nav
-      aria-label="Navegación del resumen financiero"
-      className="rounded-2xl border bg-white p-2 shadow-sm"
-    >
-      <div className="grid grid-cols-2 gap-2">
-        {opciones.map((opcion) => {
-          const activo =
-            opcion.href === "/dashboard/lp/resumen"
-              ? pathname === opcion.href
-              : pathname === opcion.href ||
-                pathname.startsWith(`${opcion.href}/`);
-
-          return (
-            <Link
-              key={opcion.href}
-              href={opcion.href}
-              aria-current={activo ? "page" : undefined}
-              className={`rounded-xl border px-4 py-2 text-center text-sm font-semibold transition ${
-                activo
-                  ? "border-lp-navy bg-lp-navy text-white"
-                  : "border-lp-navy/20 bg-white text-lp-navy hover:bg-lp-light"
-              }`}
-            >
-              {opcion.label}
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
+    <LPTabs
+      opciones={opciones}
+      ariaLabel="Navegación del resumen financiero"
+    />
   );
 }

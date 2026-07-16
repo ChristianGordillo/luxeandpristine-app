@@ -57,7 +57,11 @@ model LPCliente {
   email    String?
   activo   Boolean @default(true)
 
-  unidades LPUnidad[]
+  usaSaldoAnticipado Boolean   @default(false)
+  fechaInicioSaldo   DateTime?
+
+  unidades               LPUnidad[]
+  movimientosFinancieros LPMovimientoCliente[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -330,4 +334,30 @@ model LPRopaManchada {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   fechaCambio DateTime?
+}
+
+enum LPMovimientoClienteTipo {
+  ABONO
+  AJUSTE_CREDITO
+  AJUSTE_DEBITO
+  DEVOLUCION
+}
+
+model LPMovimientoCliente {
+  id        Int                     @id @default(autoincrement())
+  clienteId Int
+  fecha     DateTime
+  tipo      LPMovimientoClienteTipo
+  valor     Decimal                 @db.Decimal(10, 2)
+  concepto  String
+  notas     String?
+
+  cliente LPCliente @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clienteId])
+  @@index([fecha])
+  @@index([clienteId, fecha])
 }
