@@ -1,38 +1,88 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import ResumenNavigation from "@/app/components/lp/ResumenNavigation";
 
-type ClienteSaldo = {
+type EstadoCuenta =
+  | "SIN_MOVIMIENTOS"
+  | "CONCILIADO"
+  | "PENDIENTE"
+  | "SALDO_A_FAVOR";
+
+type UltimoCiclo = {
+  id: number;
+  tipo:
+    | "DIARIO"
+    | "SEMANAL"
+    | "QUINCENAL"
+    | "MENSUAL"
+    | "PERSONALIZADO";
+  fechaInicio: string | null;
+  fechaFin: string | null;
+  totalTrabajado: number;
+  totalAplicado: number;
+  saldoPendiente: number;
+  estado:
+    | "SIN_PAGO"
+    | "PAGO_PARCIAL"
+    | "CONCILIADO";
+};
+
+type ClienteCuenta = {
   id: number;
   nombre: string;
-  usaSaldoAnticipado: boolean;
-  fechaInicioSaldo: string | null;
 
-  totalAbonos: number;
-  totalCreditos: number;
+  fechaPrimerTrabajo: string | null;
+  fechaUltimoTrabajo: string | null;
+
   totalTrabajos: number;
   cantidadTrabajos: number;
-  totalDebitosManuales: number;
-  saldoActual: number;
+
+  totalPagos: number;
+  totalAjustesCredito: number;
+  totalAjustesDebito: number;
+  totalDevoluciones: number;
+
+  totalCreditos: number;
+  totalDebitos: number;
+
+  saldoCuenta: number;
+  saldoPendiente: number;
+  saldoAFavor: number;
+
+  totalPagosAplicados: number;
+  pagosSinAplicar: number;
+
+  cantidadCiclos: number;
+  ciclosConciliados: number;
+  ciclosPendientes: number;
+
+  ultimoCiclo: UltimoCiclo | null;
+  estadoCuenta: EstadoCuenta;
+};
+
+type ResumenGeneral = {
+  totalFacturado: number;
+  totalRecibido: number;
+  totalPendiente: number;
+  totalSaldoAFavor: number;
+  totalPagosSinAplicar: number;
+  clientesPendientes: number;
+  clientesConSaldoAFavor: number;
 };
 
 type RespuestaClientes = {
   status: "success" | "fail";
   message?: string;
-  clientes?: ClienteSaldo[];
+  resumen?: ResumenGeneral;
+  clientes?: ClienteCuenta[];
 };
-
-function getTodayInputValue() {
-  const today = new Date();
-  const offset = today.getTimezoneOffset();
-  const localDate = new Date(
-    today.getTime() - offset * 60 * 1000
-  );
-
-  return localDate.toISOString().split("T")[0];
-}
 
 function formatMoney(value: number) {
   return new Intl.NumberFormat("en-US", {
@@ -44,86 +94,119 @@ function formatMoney(value: number) {
 }
 
 function formatDate(fecha: string | null) {
-  if (!fecha) return "Sin configurar";
+  if (!fecha) return "—";
 
-  const [year, month, day] = fecha.split("T")[0].split("-");
+  const [year, month, day] = fecha.split("-");
 
   return `${month}/${day}/${year}`;
 }
 
-export default function SaldosClientesPage() {
-  const [clientes, setClientes] = useState<ClienteSaldo[]>([]);
-  const [busqueda, setBusqueda] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [savingId, setSavingId] = useState<number | null>(null);
-  const [error, setError] = useState("");
+function formatTipoCiclo(tipo: UltimoCiclo["tipo"]) {
+  const etiquetas: Record<
+    UltimoCiclo["tipo"],
+    string
+  > = {
+    DIARIO: "Diario",
+    SEMANAL: "Semanal",
+    QUINCENAL: "Quincenal",
+    MENSUAL: "Mensual",
+    PERSONALIZADO: "Personalizado",
+  };
 
-  /*
-   * Guardamos los cambios temporales por cliente antes
-   * de enviarlos a la API.
-   */
-  const [configuraciones, setConfiguraciones] = useState<
-    Record<
-      number,
-      {
-        usaSaldoAnticipado: boolean;
-        fechaInicioSaldo: string;
-      }
-    >
-  >({});
+  return etiquetas[tipo];
+}
+
+function obtenerPresentacionEstado(
+  estado: EstadoCuenta
+) {
+  switch (estado) {
+    case "PENDIENTE":
+      return {
+        label: "Pendiente",
+        className:
+          "border-red-200 bg-red-50 text-red-700",
+      };
+
+    case "SALDO_A_FAVOR":
+      return {
+        label: "Saldo a favor",
+        className:
+          "border-green-200 bg-green-50 text-green-700",
+      };
+
+    case "CONCILIADO":
+      return {
+        label: "Conciliado",
+        className:
+          "border-blue-200 bg-blue-50 text-blue-700",
+      };
+
+    default:
+      return {
+        label: "Sin movimientos",
+        className:
+          "border-gray-200 bg-gray-50 text-gray-600",
+      };
+  }
+}
+
+export default function SaldosClientesPage() {
+  const [clientes, setClientes] = useState<
+    ClienteCuenta[]
+  >([]);
+
+  const [resumen, setResumen] =
+    useState<ResumenGeneral | null>(null);
+
+  const [busqueda, setBusqueda] = useState("");
+
+  const [estadoFiltro, setEstadoFiltro] =
+    useState<EstadoCuenta | "TODOS">("TODOS");
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   const cargarClientes = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
 
-      const response = await fetch("/api/lp/saldos-clientes", {
-        cache: "no-store",
-      });
+      const response = await fetch(
+        "/api/lp/saldos-clientes",
+        {
+          cache: "no-store",
+        }
+      );
 
-      const data: RespuestaClientes = await response.json();
+      const data: RespuestaClientes =
+        await response.json();
 
-      if (!response.ok || data.status !== "success") {
+      if (
+        !response.ok ||
+        data.status !== "success"
+      ) {
         throw new Error(
-          data.message || "No fue posible cargar los clientes."
+          data.message ||
+            "No fue posible cargar las cuentas de clientes."
         );
       }
 
-      const clientesCargados = data.clientes || [];
-
-      setClientes(clientesCargados);
-
-      const configuracionesIniciales =
-        clientesCargados.reduce<
-          Record<
-            number,
-            {
-              usaSaldoAnticipado: boolean;
-              fechaInicioSaldo: string;
-            }
-          >
-        >((acc, cliente) => {
-          acc[cliente.id] = {
-            usaSaldoAnticipado:
-              cliente.usaSaldoAnticipado,
-            fechaInicioSaldo:
-              cliente.fechaInicioSaldo || getTodayInputValue(),
-          };
-
-          return acc;
-        }, {});
-
-      setConfiguraciones(configuracionesIniciales);
+      setClientes(data.clientes || []);
+      setResumen(data.resumen || null);
     } catch (error) {
-      console.error("Error cargando saldos:", error);
+      console.error(
+        "Error cargando cuentas de clientes:",
+        error
+      );
 
       setError(
         error instanceof Error
           ? error.message
-          : "No fue posible cargar los clientes."
+          : "No fue posible cargar las cuentas de clientes."
       );
 
       setClientes([]);
+      setResumen(null);
     } finally {
       setLoading(false);
     }
@@ -133,198 +216,192 @@ export default function SaldosClientesPage() {
     cargarClientes();
   }, [cargarClientes]);
 
-  const actualizarConfiguracionLocal = (
-    clienteId: number,
-    campo: "usaSaldoAnticipado" | "fechaInicioSaldo",
-    valor: boolean | string
-  ) => {
-    setConfiguraciones((actuales) => ({
-      ...actuales,
-      [clienteId]: {
-        ...actuales[clienteId],
-        [campo]: valor,
-      },
-    }));
-  };
-
-  const guardarConfiguracion = async (clienteId: number) => {
-    const configuracion = configuraciones[clienteId];
-
-    if (!configuracion) return;
-
-    if (
-      configuracion.usaSaldoAnticipado &&
-      !configuracion.fechaInicioSaldo
-    ) {
-      alert("Debes indicar la fecha de inicio del saldo.");
-      return;
-    }
-
-    try {
-      setSavingId(clienteId);
-
-      const response = await fetch("/api/lp/saldos-clientes", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          clienteId,
-          usaSaldoAnticipado:
-            configuracion.usaSaldoAnticipado,
-          fechaInicioSaldo:
-            configuracion.usaSaldoAnticipado
-              ? configuracion.fechaInicioSaldo
-              : null,
-        }),
-      });
-
-      const data: RespuestaClientes = await response.json();
-
-      if (!response.ok || data.status !== "success") {
-        alert(
-          data.message ||
-            "No fue posible actualizar la configuración."
-        );
-
-        return;
-      }
-
-      await cargarClientes();
-    } catch (error) {
-      console.error(
-        "Error guardando configuración:",
-        error
-      );
-
-      alert(
-        "No fue posible actualizar la configuración."
-      );
-    } finally {
-      setSavingId(null);
-    }
-  };
-
   const clientesFiltrados = useMemo(() => {
-    const termino = busqueda.trim().toLowerCase();
+    const termino =
+      busqueda.trim().toLowerCase();
 
-    if (!termino) return clientes;
+    return clientes.filter((cliente) => {
+      const coincideBusqueda =
+        !termino ||
+        cliente.nombre
+          .toLowerCase()
+          .includes(termino);
 
-    return clientes.filter((cliente) =>
-      cliente.nombre.toLowerCase().includes(termino)
-    );
-  }, [clientes, busqueda]);
+      const coincideEstado =
+        estadoFiltro === "TODOS" ||
+        cliente.estadoCuenta === estadoFiltro;
 
-  const resumenGeneral = useMemo(() => {
-    const activos = clientes.filter(
-      (cliente) => cliente.usaSaldoAnticipado
-    );
-
-    return {
-      clientesActivos: activos.length,
-
-      saldoDisponible: activos.reduce(
-        (acc, cliente) => acc + cliente.saldoActual,
-        0
-      ),
-
-      totalAnticipos: activos.reduce(
-        (acc, cliente) => acc + cliente.totalAbonos,
-        0
-      ),
-
-      totalConsumido: activos.reduce(
-        (acc, cliente) => acc + cliente.totalTrabajos,
-        0
-      ),
-    };
-  }, [clientes]);
+      return (
+        coincideBusqueda &&
+        coincideEstado
+      );
+    });
+  }, [
+    clientes,
+    busqueda,
+    estadoFiltro,
+  ]);
 
   return (
     <div className="space-y-6 pb-24">
       <div>
         <h1 className="text-2xl font-bold text-lp-navy">
-          Saldos de clientes
+          Cuentas de clientes
         </h1>
-        
+
         <p className="mt-1 text-sm text-lp-navy/70">
-          Configura clientes con anticipos y controla el saldo
-          disponible después de cada limpieza.
+          Controla trabajos realizados, pagos recibidos,
+          ciclos conciliados y saldos pendientes.
         </p>
       </div>
-        <ResumenNavigation />
+
+      <ResumenNavigation />
+
       {error && (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {!loading && (
+      {!loading && resumen && (
         <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <ResumenCard
-            label="Clientes con saldo"
-            value={resumenGeneral.clientesActivos}
-          />
-
-          <ResumenCard
-            label="Anticipos recibidos"
+            label="Total facturado"
             value={formatMoney(
-              resumenGeneral.totalAnticipos
+              resumen.totalFacturado
             )}
           />
 
           <ResumenCard
-            label="Servicios descontados"
+            label="Total recibido"
             value={formatMoney(
-              resumenGeneral.totalConsumido
+              resumen.totalRecibido
             )}
+            valueClassName="text-green-700"
           />
 
           <ResumenCard
-            label="Saldo disponible"
+            label="Pendiente por cobrar"
             value={formatMoney(
-              resumenGeneral.saldoDisponible
+              resumen.totalPendiente
             )}
             valueClassName={
-              resumenGeneral.saldoDisponible >= 0
-                ? "text-green-700"
-                : "text-red-600"
+              resumen.totalPendiente > 0
+                ? "text-red-600"
+                : "text-lp-navy"
             }
-            destacado
+            destacado={
+              resumen.totalPendiente > 0
+            }
+          />
+
+          <ResumenCard
+            label="Saldo a favor"
+            value={formatMoney(
+              resumen.totalSaldoAFavor
+            )}
+            valueClassName="text-green-700"
+          />
+        </section>
+      )}
+
+      {!loading && resumen && (
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <MiniResumenCard
+            label="Clientes pendientes"
+            value={resumen.clientesPendientes}
+          />
+
+          <MiniResumenCard
+            label="Clientes con saldo a favor"
+            value={
+              resumen.clientesConSaldoAFavor
+            }
+          />
+
+          <MiniResumenCard
+            label="Pagos sin aplicar"
+            value={formatMoney(
+              resumen.totalPagosSinAplicar
+            )}
           />
         </section>
       )}
 
       <section className="rounded-2xl border bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h2 className="font-bold text-lp-navy">
               Clientes
             </h2>
 
             <p className="mt-1 text-xs text-lp-navy/60">
-              Activa el saldo anticipado únicamente para los
-              clientes que hayan entregado un anticipo.
+              El saldo se calcula desde el primer trabajo
+              registrado de cada cliente.
             </p>
           </div>
 
-          <div className="w-full sm:max-w-sm">
-            <label
-              htmlFor="buscar-cliente"
-              className="text-xs font-semibold text-lp-navy"
-            >
-              Buscar cliente
-            </label>
+          <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:max-w-2xl">
+            <div>
+              <label
+                htmlFor="buscar-cliente"
+                className="text-xs font-semibold text-lp-navy"
+              >
+                Buscar cliente
+              </label>
 
-            <input
-              id="buscar-cliente"
-              value={busqueda}
-              onChange={(event) =>
-                setBusqueda(event.target.value)
-              }
-              placeholder="Anna, We Host, IMD..."
-              className="mt-1 w-full rounded-xl border bg-white p-3 text-lp-navy"
-            />
+              <input
+                id="buscar-cliente"
+                value={busqueda}
+                onChange={(event) =>
+                  setBusqueda(event.target.value)
+                }
+                placeholder="Anna, We Host, IMD..."
+                className="mt-1 w-full rounded-xl border bg-white p-3 text-lp-navy"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="estado-cliente"
+                className="text-xs font-semibold text-lp-navy"
+              >
+                Estado
+              </label>
+
+              <select
+                id="estado-cliente"
+                value={estadoFiltro}
+                onChange={(event) =>
+                  setEstadoFiltro(
+                    event.target.value as
+                      | EstadoCuenta
+                      | "TODOS"
+                  )
+                }
+                className="mt-1 w-full rounded-xl border bg-white p-3 text-lp-navy"
+              >
+                <option value="TODOS">
+                  Todos
+                </option>
+
+                <option value="PENDIENTE">
+                  Pendientes
+                </option>
+
+                <option value="CONCILIADO">
+                  Conciliados
+                </option>
+
+                <option value="SALDO_A_FAVOR">
+                  Con saldo a favor
+                </option>
+
+                <option value="SIN_MOVIMIENTOS">
+                  Sin movimientos
+                </option>
+              </select>
+            </div>
           </div>
         </div>
       </section>
@@ -333,7 +410,7 @@ export default function SaldosClientesPage() {
         <div className="flex items-center justify-between gap-3 border-b px-4 py-4 sm:px-5">
           <div>
             <h2 className="font-bold text-lp-navy">
-              Configuración de saldos
+              Estado general
             </h2>
 
             {!loading && (
@@ -345,12 +422,21 @@ export default function SaldosClientesPage() {
               </p>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={cargarClientes}
+            disabled={loading}
+            className="rounded-xl border border-lp-navy px-3 py-2 text-xs font-semibold text-lp-navy disabled:opacity-50"
+          >
+            Actualizar
+          </button>
         </div>
 
         {loading ? (
           <div className="p-8 text-center">
             <p className="text-sm font-semibold text-lp-navy">
-              Cargando clientes...
+              Cargando cuentas...
             </p>
           </div>
         ) : clientesFiltrados.length === 0 ? (
@@ -360,7 +446,7 @@ export default function SaldosClientesPage() {
             </p>
 
             <p className="mt-1 text-sm text-lp-navy/60">
-              Prueba con otro término de búsqueda.
+              Prueba con otro término o estado.
             </p>
           </div>
         ) : (
@@ -373,24 +459,24 @@ export default function SaldosClientesPage() {
                       Cliente
                     </th>
 
-                    <th className="px-4 py-3 text-center">
-                      Saldo anticipado
-                    </th>
-
-                    <th className="px-4 py-3 text-left">
-                      Fecha de inicio
+                    <th className="px-4 py-3 text-right">
+                      Facturado
                     </th>
 
                     <th className="px-4 py-3 text-right">
-                      Anticipos
-                    </th>
-
-                    <th className="px-4 py-3 text-right">
-                      Limpiezas
+                      Recibido
                     </th>
 
                     <th className="px-4 py-3 text-right">
                       Saldo
+                    </th>
+
+                    <th className="px-4 py-3 text-left">
+                      Ciclos
+                    </th>
+
+                    <th className="px-4 py-3 text-left">
+                      Estado
                     </th>
 
                     <th className="px-4 py-3 text-right">
@@ -400,160 +486,27 @@ export default function SaldosClientesPage() {
                 </thead>
 
                 <tbody>
-                  {clientesFiltrados.map((cliente) => {
-                    const configuracion =
-                      configuraciones[cliente.id];
-
-                    if (!configuracion) return null;
-
-                    const tieneCambios =
-                      configuracion.usaSaldoAnticipado !==
-                        cliente.usaSaldoAnticipado ||
-                      (
-                        configuracion.usaSaldoAnticipado &&
-                        configuracion.fechaInicioSaldo !==
-                          (cliente.fechaInicioSaldo || "")
-                      );
-
-                    return (
-                      <tr
+                  {clientesFiltrados.map(
+                    (cliente) => (
+                      <ClienteFila
                         key={cliente.id}
-                        className="border-b last:border-b-0 hover:bg-lp-light/40"
-                      >
-                        <td className="px-4 py-4">
-                          <p className="font-bold">
-                            {cliente.nombre}
-                          </p>
-
-                          <p className="mt-0.5 text-xs text-lp-navy/50">
-                            ID #{cliente.id}
-                          </p>
-                        </td>
-
-                        <td className="px-4 py-4 text-center">
-                          <label className="inline-flex cursor-pointer items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={
-                                configuracion.usaSaldoAnticipado
-                              }
-                              onChange={(event) =>
-                                actualizarConfiguracionLocal(
-                                  cliente.id,
-                                  "usaSaldoAnticipado",
-                                  event.target.checked
-                                )
-                              }
-                              className="h-4 w-4 accent-lp-navy"
-                            />
-
-                            <span className="text-xs font-semibold">
-                              {configuracion.usaSaldoAnticipado
-                                ? "Activo"
-                                : "Inactivo"}
-                            </span>
-                          </label>
-                        </td>
-
-                        <td className="px-4 py-4">
-                          <input
-                            type="date"
-                            value={
-                              configuracion.fechaInicioSaldo
-                            }
-                            onChange={(event) =>
-                              actualizarConfiguracionLocal(
-                                cliente.id,
-                                "fechaInicioSaldo",
-                                event.target.value
-                              )
-                            }
-                            disabled={
-                              !configuracion.usaSaldoAnticipado
-                            }
-                            className="rounded-xl border bg-white p-2 text-sm text-lp-navy disabled:cursor-not-allowed disabled:bg-gray-100 disabled:opacity-50"
-                          />
-                        </td>
-
-                        <td className="px-4 py-4 text-right font-semibold">
-                          {cliente.usaSaldoAnticipado
-                            ? formatMoney(cliente.totalAbonos)
-                            : "—"}
-                        </td>
-
-                        <td className="px-4 py-4 text-right">
-                          {cliente.usaSaldoAnticipado
-                            ? formatMoney(cliente.totalTrabajos)
-                            : "—"}
-                        </td>
-
-                        <td
-                          className={`px-4 py-4 text-right font-bold ${
-                            cliente.saldoActual >= 0
-                              ? "text-green-700"
-                              : "text-red-600"
-                          }`}
-                        >
-                          {cliente.usaSaldoAnticipado
-                            ? formatMoney(cliente.saldoActual)
-                            : "—"}
-                        </td>
-
-                        <td className="px-4 py-4">
-                          <div className="flex justify-end gap-2">
-                            {tieneCambios && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  guardarConfiguracion(
-                                    cliente.id
-                                  )
-                                }
-                                disabled={
-                                  savingId === cliente.id
-                                }
-                                className="rounded-lg bg-lp-gold px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
-                              >
-                                {savingId === cliente.id
-                                  ? "Guardando..."
-                                  : "Guardar"}
-                              </button>
-                            )}
-
-                            {cliente.usaSaldoAnticipado && (
-                              <Link
-                                href={`/dashboard/lp/saldos-clientes/${cliente.id}`}
-                                className="rounded-lg border border-lp-navy px-3 py-2 text-xs font-semibold text-lp-navy"
-                              >
-                                Ver estado
-                              </Link>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                        cliente={cliente}
+                      />
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
 
             <div className="divide-y xl:hidden">
-              {clientesFiltrados.map((cliente) => (
-                <ClienteSaldoCard
-                  key={cliente.id}
-                  cliente={cliente}
-                  configuracion={
-                    configuraciones[cliente.id]
-                  }
-                  saving={
-                    savingId === cliente.id
-                  }
-                  onActualizar={
-                    actualizarConfiguracionLocal
-                  }
-                  onGuardar={guardarConfiguracion}
-                />
-              ))}
+              {clientesFiltrados.map(
+                (cliente) => (
+                  <ClienteCuentaCard
+                    key={cliente.id}
+                    cliente={cliente}
+                  />
+                )
+              )}
             </div>
           </>
         )}
@@ -562,39 +515,137 @@ export default function SaldosClientesPage() {
   );
 }
 
-function ClienteSaldoCard({
+function ClienteFila({
   cliente,
-  configuracion,
-  saving,
-  onActualizar,
-  onGuardar,
 }: {
-  cliente: ClienteSaldo;
-
-  configuracion?: {
-    usaSaldoAnticipado: boolean;
-    fechaInicioSaldo: string;
-  };
-
-  saving: boolean;
-
-  onActualizar: (
-    clienteId: number,
-    campo: "usaSaldoAnticipado" | "fechaInicioSaldo",
-    valor: boolean | string
-  ) => void;
-
-  onGuardar: (clienteId: number) => void;
+  cliente: ClienteCuenta;
 }) {
-  if (!configuracion) return null;
+  const estado =
+    obtenerPresentacionEstado(
+      cliente.estadoCuenta
+    );
 
-  const tieneCambios =
-    configuracion.usaSaldoAnticipado !==
-      cliente.usaSaldoAnticipado ||
-    (
-      configuracion.usaSaldoAnticipado &&
-      configuracion.fechaInicioSaldo !==
-        (cliente.fechaInicioSaldo || "")
+  return (
+    <tr className="border-b last:border-b-0 hover:bg-lp-light/40">
+      <td className="px-4 py-4">
+        <p className="font-bold">
+          {cliente.nombre}
+        </p>
+
+        <p className="mt-0.5 text-xs text-lp-navy/50">
+          Desde{" "}
+          {formatDate(
+            cliente.fechaPrimerTrabajo
+          )}
+        </p>
+      </td>
+
+      <td className="px-4 py-4 text-right font-semibold">
+        {formatMoney(
+          cliente.totalTrabajos
+        )}
+
+        <p className="mt-0.5 text-xs font-normal text-lp-navy/50">
+          {cliente.cantidadTrabajos} trabajos
+        </p>
+      </td>
+
+      <td className="px-4 py-4 text-right font-semibold text-green-700">
+        {formatMoney(cliente.totalPagos)}
+
+        {cliente.pagosSinAplicar > 0 && (
+          <p className="mt-0.5 text-xs font-normal text-amber-700">
+            {formatMoney(
+              cliente.pagosSinAplicar
+            )} sin aplicar
+          </p>
+        )}
+      </td>
+
+      <td className="px-4 py-4 text-right">
+        {cliente.saldoPendiente > 0 ? (
+          <div>
+            <p className="font-bold text-red-600">
+              {formatMoney(
+                cliente.saldoPendiente
+              )}
+            </p>
+
+            <p className="mt-0.5 text-xs text-red-600/70">
+              Por cobrar
+            </p>
+          </div>
+        ) : cliente.saldoAFavor > 0 ? (
+          <div>
+            <p className="font-bold text-green-700">
+              {formatMoney(
+                cliente.saldoAFavor
+              )}
+            </p>
+
+            <p className="mt-0.5 text-xs text-green-700/70">
+              A favor
+            </p>
+          </div>
+        ) : (
+          <p className="font-bold text-lp-navy">
+            {formatMoney(0)}
+          </p>
+        )}
+      </td>
+
+      <td className="px-4 py-4">
+        <p className="font-semibold">
+          {cliente.ciclosConciliados} /{" "}
+          {cliente.cantidadCiclos}
+        </p>
+
+        <p className="mt-0.5 text-xs text-lp-navy/50">
+          conciliados
+        </p>
+
+        {cliente.ultimoCiclo && (
+          <p className="mt-1 text-xs text-lp-navy/60">
+            {formatTipoCiclo(
+              cliente.ultimoCiclo.tipo
+            )}{" "}
+            ·{" "}
+            {formatDate(
+              cliente.ultimoCiclo
+                .fechaInicio
+            )}
+          </p>
+        )}
+      </td>
+
+      <td className="px-4 py-4">
+        <span
+          className={`inline-flex rounded-full border px-3 py-1 text-xs font-bold ${estado.className}`}
+        >
+          {estado.label}
+        </span>
+      </td>
+
+      <td className="px-4 py-4 text-right">
+        <Link
+          href={`/dashboard/lp/saldos-clientes/${cliente.id}`}
+          className="inline-flex rounded-lg border border-lp-navy px-3 py-2 text-xs font-semibold text-lp-navy"
+        >
+          Ver estado
+        </Link>
+      </td>
+    </tr>
+  );
+}
+
+function ClienteCuentaCard({
+  cliente,
+}: {
+  cliente: ClienteCuenta;
+}) {
+  const estado =
+    obtenerPresentacionEstado(
+      cliente.estadoCuenta
     );
 
   return (
@@ -606,114 +657,100 @@ function ClienteSaldoCard({
           </h3>
 
           <p className="mt-0.5 text-xs text-lp-navy/50">
-            {cliente.usaSaldoAnticipado
-              ? `Inicio: ${formatDate(
-                  cliente.fechaInicioSaldo
-                )}`
-              : "Facturación normal"}
+            Desde{" "}
+            {formatDate(
+              cliente.fechaPrimerTrabajo
+            )}
           </p>
         </div>
 
-        {cliente.usaSaldoAnticipado && (
-          <p
-            className={`text-lg font-bold ${
-              cliente.saldoActual >= 0
-                ? "text-green-700"
-                : "text-red-600"
-            }`}
-          >
-            {formatMoney(cliente.saldoActual)}
-          </p>
-        )}
+        <span
+          className={`shrink-0 rounded-full border px-3 py-1 text-xs font-bold ${estado.className}`}
+        >
+          {estado.label}
+        </span>
       </div>
 
-      {cliente.usaSaldoAnticipado && (
-        <div className="grid grid-cols-2 gap-2">
-          <MiniItem
-            label="Anticipos"
-            value={formatMoney(cliente.totalAbonos)}
-          />
+      <div className="grid grid-cols-2 gap-2">
+        <MiniItem
+          label="Facturado"
+          value={formatMoney(
+            cliente.totalTrabajos
+          )}
+        />
 
-          <MiniItem
-            label="Limpiezas"
-            value={formatMoney(cliente.totalTrabajos)}
-          />
+        <MiniItem
+          label="Recibido"
+          value={formatMoney(
+            cliente.totalPagos
+          )}
+        />
 
-          <MiniItem
-            label="Trabajos"
-            value={cliente.cantidadTrabajos}
-          />
+        <MiniItem
+          label="Trabajos"
+          value={cliente.cantidadTrabajos}
+        />
 
-          <MiniItem
-            label="Saldo"
-            value={formatMoney(cliente.saldoActual)}
-          />
+        <MiniItem
+          label="Ciclos conciliados"
+          value={`${cliente.ciclosConciliados}/${cliente.cantidadCiclos}`}
+        />
+      </div>
+
+      <div
+        className={`rounded-xl p-3 ${
+          cliente.saldoPendiente > 0
+            ? "bg-red-50"
+            : cliente.saldoAFavor > 0
+              ? "bg-green-50"
+              : "bg-lp-light"
+        }`}
+      >
+        <p className="text-xs text-lp-navy/60">
+          {cliente.saldoPendiente > 0
+            ? "Pendiente por cobrar"
+            : cliente.saldoAFavor > 0
+              ? "Saldo a favor"
+              : "Saldo de cuenta"}
+        </p>
+
+        <p
+          className={`mt-1 text-xl font-bold ${
+            cliente.saldoPendiente > 0
+              ? "text-red-600"
+              : cliente.saldoAFavor > 0
+                ? "text-green-700"
+                : "text-lp-navy"
+          }`}
+        >
+          {formatMoney(
+            cliente.saldoPendiente > 0
+              ? cliente.saldoPendiente
+              : cliente.saldoAFavor
+          )}
+        </p>
+      </div>
+
+      {cliente.pagosSinAplicar > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="text-xs font-semibold text-amber-800">
+            Pagos sin aplicar
+          </p>
+
+          <p className="mt-1 font-bold text-amber-800">
+            {formatMoney(
+              cliente.pagosSinAplicar
+            )}
+          </p>
         </div>
       )}
 
-      <div className="space-y-3 rounded-xl bg-lp-light p-3">
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm font-semibold text-lp-navy">
-            Usar saldo anticipado
-          </span>
-
-          <input
-            type="checkbox"
-            checked={configuracion.usaSaldoAnticipado}
-            onChange={(event) =>
-              onActualizar(
-                cliente.id,
-                "usaSaldoAnticipado",
-                event.target.checked
-              )
-            }
-            className="h-5 w-5 accent-lp-navy"
-          />
-        </label>
-
-        {configuracion.usaSaldoAnticipado && (
-          <div className="space-y-1">
-            <label className="text-xs font-semibold text-lp-navy">
-              Fecha desde la que se descuentan limpiezas
-            </label>
-
-            <input
-              type="date"
-              value={configuracion.fechaInicioSaldo}
-              onChange={(event) =>
-                onActualizar(
-                  cliente.id,
-                  "fechaInicioSaldo",
-                  event.target.value
-                )
-              }
-              className="w-full rounded-xl border bg-white p-3 text-lp-navy"
-            />
-          </div>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {tieneCambios && (
-          <button
-            type="button"
-            onClick={() => onGuardar(cliente.id)}
-            disabled={saving}
-            className="rounded-xl bg-lp-gold px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
-          >
-            {saving ? "Guardando..." : "Guardar configuración"}
-          </button>
-        )}
-
-        {cliente.usaSaldoAnticipado && (
-          <Link
-            href={`/dashboard/lp/saldos-clientes/${cliente.id}`}
-            className="rounded-xl border border-lp-navy px-4 py-3 text-center text-sm font-semibold text-lp-navy"
-          >
-            Ver estado de cuenta
-          </Link>
-        )}
-      </div>
+      <Link
+        href={`/dashboard/lp/saldos-clientes/${cliente.id}`}
+        className="block rounded-xl border border-lp-navy px-4 py-3 text-center text-sm font-semibold text-lp-navy"
+      >
+        Ver estado de cuenta
+      </Link>
     </article>
   );
 }
@@ -733,7 +770,7 @@ function ResumenCard({
     <div
       className={`min-w-0 rounded-2xl border p-4 shadow-sm ${
         destacado
-          ? "border-lp-gold/40 bg-lp-gold/10"
+          ? "border-red-200 bg-red-50"
           : "border-lp-navy/10 bg-white"
       }`}
     >
@@ -750,6 +787,26 @@ function ResumenCard({
   );
 }
 
+function MiniResumenCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="rounded-2xl border border-lp-navy/10 bg-white p-4 shadow-sm">
+      <p className="text-xs text-lp-navy/60">
+        {label}
+      </p>
+
+      <p className="mt-1 text-lg font-bold text-lp-navy">
+        {value}
+      </p>
+    </div>
+  );
+}
+
 function MiniItem({
   label,
   value,
@@ -758,7 +815,7 @@ function MiniItem({
   value: string | number;
 }) {
   return (
-    <div className="min-w-0 rounded-xl bg-white p-3">
+    <div className="min-w-0 rounded-xl bg-lp-light p-3">
       <p className="text-xs text-lp-navy/60">
         {label}
       </p>
