@@ -2,37 +2,34 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { LPMovimientoClienteTipo } from "@prisma/client";
 
-const TIPOS_VALIDOS = Object.values(LPMovimientoClienteTipo);
+const TIPOS_VALIDOS = Object.values(
+  LPMovimientoClienteTipo
+);
 
 function crearFechaLocal(fecha: string) {
   return new Date(`${fecha}T12:00:00.000Z`);
 }
 
-function crearRangoFechas(desde?: string | null, hasta?: string | null) {
+function crearRangoFechas(
+  desde?: string | null,
+  hasta?: string | null
+) {
   return {
     ...(desde
       ? {
-          gte: new Date(`${desde}T00:00:00.000Z`),
+          gte: new Date(
+            `${desde}T00:00:00.000Z`
+          ),
         }
       : {}),
+
     ...(hasta
       ? {
-          lte: new Date(`${hasta}T23:59:59.999Z`),
+          lte: new Date(
+            `${hasta}T23:59:59.999Z`
+          ),
         }
       : {}),
-  };
-}
-
-function serializarMovimiento<
-  T extends {
-    valor: unknown;
-    fecha: Date;
-  }
->(movimiento: T) {
-  return {
-    ...movimiento,
-    valor: Number(movimiento.valor || 0),
-    fecha: movimiento.fecha.toISOString().split("T")[0],
   };
 }
 
@@ -41,7 +38,9 @@ function validarTipo(
 ): tipo is LPMovimientoClienteTipo {
   return (
     typeof tipo === "string" &&
-    TIPOS_VALIDOS.includes(tipo as LPMovimientoClienteTipo)
+    TIPOS_VALIDOS.includes(
+      tipo as LPMovimientoClienteTipo
+    )
   );
 }
 
@@ -54,22 +53,94 @@ function validarValor(valor: unknown) {
   );
 }
 
+function esTipoAplicable(
+  tipo: LPMovimientoClienteTipo
+) {
+  return (
+    tipo === LPMovimientoClienteTipo.ABONO ||
+    tipo ===
+      LPMovimientoClienteTipo.AJUSTE_CREDITO
+  );
+}
+
+function calcularTotalAplicado(
+  aplicaciones: Array<{
+    valorAplicado: unknown;
+  }>
+) {
+  return aplicaciones.reduce(
+    (total, aplicacion) =>
+      total +
+      Number(aplicacion.valorAplicado || 0),
+    0
+  );
+}
+
+function serializarMovimiento<
+  T extends {
+    valor: unknown;
+    fecha: Date;
+    tipo: LPMovimientoClienteTipo;
+    aplicacionesPago?: Array<{
+      valorAplicado: unknown;
+    }>;
+  }
+>(movimiento: T) {
+  const valor = Number(movimiento.valor || 0);
+
+  const totalAplicado =
+    calcularTotalAplicado(
+      movimiento.aplicacionesPago || []
+    );
+
+  return {
+    ...movimiento,
+
+    valor,
+
+    fecha:
+      movimiento.fecha
+        .toISOString()
+        .split("T")[0],
+
+    totalAplicado,
+
+    saldoDisponible: esTipoAplicable(
+      movimiento.tipo
+    )
+      ? Math.max(
+          0,
+          valor - totalAplicado
+        )
+      : 0,
+  };
+}
+
+function normalizarTextoOpcional(valor: unknown) {
+  if (
+    typeof valor !== "string" ||
+    !valor.trim()
+  ) {
+    return null;
+  }
+
+  return valor.trim();
+}
+
 /*
  * GET
- *
- * Consulta movimientos financieros.
- *
- * Ejemplos:
- *
- * /api/lp/movimientos-clientes
- * /api/lp/movimientos-clientes?clienteId=3
- * /api/lp/movimientos-clientes?clienteId=3&desde=2026-07-01&hasta=2026-07-31
  */
-export async function GET(request: NextRequest) {
+export async function GET(
+  request: NextRequest
+) {
   try {
-    const { searchParams } = new URL(request.url);
+    const { searchParams } = new URL(
+      request.url
+    );
 
-    const clienteIdParam = searchParams.get("clienteId");
+    const clienteIdParam =
+      searchParams.get("clienteId");
+
     const desde = searchParams.get("desde");
     const hasta = searchParams.get("hasta");
 
@@ -79,18 +150,26 @@ export async function GET(request: NextRequest) {
 
     if (
       clienteIdParam &&
-      (!Number.isInteger(clienteId) || Number(clienteId) <= 0)
+      (
+        !Number.isInteger(clienteId) ||
+        Number(clienteId) <= 0
+      )
     ) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El clienteId no es válido.",
+          message:
+            "El clienteId no es válido.",
         },
         { status: 400 }
       );
     }
 
-    if (desde && hasta && desde > hasta) {
+    if (
+      desde &&
+      hasta &&
+      desde > hasta
+    ) {
       return NextResponse.json(
         {
           status: "fail",
@@ -101,7 +180,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const rangoFechas = crearRangoFechas(desde, hasta);
+    const rangoFechas =
+      crearRangoFechas(desde, hasta);
 
     const movimientos =
       await prisma.lPMovimientoCliente.findMany({
@@ -111,12 +191,15 @@ export async function GET(request: NextRequest) {
                 clienteId,
               }
             : {}),
-          ...(Object.keys(rangoFechas).length > 0
+
+          ...(Object.keys(rangoFechas)
+            .length > 0
             ? {
                 fecha: rangoFechas,
               }
             : {}),
         },
+
         include: {
           cliente: {
             select: {
@@ -124,7 +207,24 @@ export async function GET(request: NextRequest) {
               nombre: true,
             },
           },
+
+          aplicacionesPago: {
+            select: {
+              id: true,
+              valorAplicado: true,
+              cicloId: true,
+
+              ciclo: {
+                select: {
+                  fechaInicio: true,
+                  fechaFin: true,
+                  tipo: true,
+                },
+              },
+            },
+          },
         },
+
         orderBy: [
           {
             fecha: "desc",
@@ -135,13 +235,21 @@ export async function GET(request: NextRequest) {
         ],
       });
 
-    const movimientosSerializados = movimientos.map(
-      serializarMovimiento
-    );
+    const movimientosSerializados =
+      movimientos.map(
+        serializarMovimiento
+      );
 
     const resumen = movimientos.reduce(
       (acc, movimiento) => {
-        const valor = Number(movimiento.valor || 0);
+        const valor = Number(
+          movimiento.valor || 0
+        );
+
+        const totalAplicado =
+          calcularTotalAplicado(
+            movimiento.aplicacionesPago
+          );
 
         if (
           movimiento.tipo ===
@@ -150,6 +258,12 @@ export async function GET(request: NextRequest) {
             LPMovimientoClienteTipo.AJUSTE_CREDITO
         ) {
           acc.creditos += valor;
+          acc.aplicado += totalAplicado;
+
+          acc.disponible += Math.max(
+            0,
+            valor - totalAplicado
+          );
         }
 
         if (
@@ -166,18 +280,30 @@ export async function GET(request: NextRequest) {
       {
         creditos: 0,
         debitos: 0,
+        aplicado: 0,
+        disponible: 0,
       }
     );
 
     return NextResponse.json({
       status: "success",
-      movimientos: movimientosSerializados,
+
+      movimientos:
+        movimientosSerializados,
+
       resumen: {
         cantidad: movimientos.length,
-        totalCreditos: resumen.creditos,
-        totalDebitos: resumen.debitos,
+        totalCreditos:
+          resumen.creditos,
+        totalDebitos:
+          resumen.debitos,
+        totalAplicado:
+          resumen.aplicado,
+        totalDisponible:
+          resumen.disponible,
         saldoMovimientos:
-          resumen.creditos - resumen.debitos,
+          resumen.creditos -
+          resumen.debitos,
       },
     });
   } catch (error) {
@@ -199,21 +325,10 @@ export async function GET(request: NextRequest) {
 
 /*
  * POST
- *
- * Registra un nuevo abono, ajuste o devolución.
- *
- * Body:
- *
- * {
- *   "clienteId": 3,
- *   "fecha": "2026-07-15",
- *   "tipo": "ABONO",
- *   "valor": 1000,
- *   "concepto": "Initial advance payment",
- *   "notas": "Advance for future cleaning services"
- * }
  */
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest
+) {
   try {
     const body = await request.json();
 
@@ -223,19 +338,24 @@ export async function POST(request: NextRequest) {
       tipo,
       valor,
       concepto,
+      referencia,
       notas,
     } = body;
 
-    const clienteIdNumerico = Number(clienteId);
+    const clienteIdNumerico =
+      Number(clienteId);
 
     if (
-      !Number.isInteger(clienteIdNumerico) ||
+      !Number.isInteger(
+        clienteIdNumerico
+      ) ||
       clienteIdNumerico <= 0
     ) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "Debes seleccionar un cliente válido.",
+          message:
+            "Debes seleccionar un cliente válido.",
         },
         { status: 400 }
       );
@@ -248,7 +368,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "Debes indicar la fecha.",
+          message:
+            "Debes indicar la fecha.",
         },
         { status: 400 }
       );
@@ -258,7 +379,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El tipo de movimiento no es válido.",
+          message:
+            "El tipo de movimiento no es válido.",
           tiposValidos: TIPOS_VALIDOS,
         },
         { status: 400 }
@@ -283,27 +405,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "Debes ingresar un concepto.",
+          message:
+            "Debes ingresar un concepto.",
         },
         { status: 400 }
       );
     }
 
-    const cliente = await prisma.lPCliente.findUnique({
-      where: {
-        id: clienteIdNumerico,
-      },
-      select: {
-        id: true,
-        nombre: true,
-      },
-    });
+    const cliente =
+      await prisma.lPCliente.findUnique({
+        where: {
+          id: clienteIdNumerico,
+        },
+        select: {
+          id: true,
+          nombre: true,
+        },
+      });
 
     if (!cliente) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El cliente seleccionado no existe.",
+          message:
+            "El cliente seleccionado no existe.",
         },
         { status: 404 }
       );
@@ -312,22 +437,41 @@ export async function POST(request: NextRequest) {
     const movimiento =
       await prisma.lPMovimientoCliente.create({
         data: {
-          clienteId: clienteIdNumerico,
-          fecha: crearFechaLocal(fecha),
+          clienteId:
+            clienteIdNumerico,
+
+          fecha:
+            crearFechaLocal(fecha),
+
           tipo,
+
           valor: Number(valor),
-          concepto: concepto.trim(),
+
+          concepto:
+            concepto.trim(),
+
+          referencia:
+            normalizarTextoOpcional(
+              referencia
+            ),
+
           notas:
-            typeof notas === "string" &&
-            notas.trim()
-              ? notas.trim()
-              : null,
+            normalizarTextoOpcional(
+              notas
+            ),
         },
+
         include: {
           cliente: {
             select: {
               id: true,
               nombre: true,
+            },
+          },
+
+          aplicacionesPago: {
+            select: {
+              valorAplicado: true,
             },
           },
         },
@@ -336,8 +480,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         status: "success",
-        message: "Movimiento registrado correctamente.",
-        movimiento: serializarMovimiento(movimiento),
+
+        message:
+          tipo ===
+          LPMovimientoClienteTipo.ABONO
+            ? "Pago registrado correctamente."
+            : "Movimiento registrado correctamente.",
+
+        movimiento:
+          serializarMovimiento(
+            movimiento
+          ),
       },
       { status: 201 }
     );
@@ -360,21 +513,10 @@ export async function POST(request: NextRequest) {
 
 /*
  * PATCH
- *
- * Actualiza un movimiento existente.
- *
- * Body:
- *
- * {
- *   "id": 1,
- *   "fecha": "2026-07-15",
- *   "tipo": "ABONO",
- *   "valor": 1000,
- *   "concepto": "Initial advance payment",
- *   "notas": ""
- * }
  */
-export async function PATCH(request: NextRequest) {
+export async function PATCH(
+  request: NextRequest
+) {
   try {
     const body = await request.json();
 
@@ -385,19 +527,23 @@ export async function PATCH(request: NextRequest) {
       tipo,
       valor,
       concepto,
+      referencia,
       notas,
     } = body;
 
     const movimientoId = Number(id);
 
     if (
-      !Number.isInteger(movimientoId) ||
+      !Number.isInteger(
+        movimientoId
+      ) ||
       movimientoId <= 0
     ) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El id del movimiento no es válido.",
+          message:
+            "El id del movimiento no es válido.",
         },
         { status: 400 }
       );
@@ -408,17 +554,31 @@ export async function PATCH(request: NextRequest) {
         where: {
           id: movimientoId,
         },
+
+        include: {
+          aplicacionesPago: {
+            select: {
+              valorAplicado: true,
+            },
+          },
+        },
       });
 
     if (!movimientoActual) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El movimiento no existe.",
+          message:
+            "El movimiento no existe.",
         },
         { status: 404 }
       );
     }
+
+    const totalAplicado =
+      calcularTotalAplicado(
+        movimientoActual.aplicacionesPago
+      );
 
     const datosActualizacion: {
       clienteId?: number;
@@ -426,6 +586,7 @@ export async function PATCH(request: NextRequest) {
       tipo?: LPMovimientoClienteTipo;
       valor?: number;
       concepto?: string;
+      referencia?: string | null;
       notas?: string | null;
     } = {};
 
@@ -433,18 +594,37 @@ export async function PATCH(request: NextRequest) {
       clienteId !== undefined &&
       clienteId !== null
     ) {
-      const clienteIdNumerico = Number(clienteId);
+      const clienteIdNumerico =
+        Number(clienteId);
 
       if (
-        !Number.isInteger(clienteIdNumerico) ||
+        !Number.isInteger(
+          clienteIdNumerico
+        ) ||
         clienteIdNumerico <= 0
       ) {
         return NextResponse.json(
           {
             status: "fail",
-            message: "El clienteId no es válido.",
+            message:
+              "El clienteId no es válido.",
           },
           { status: 400 }
+        );
+      }
+
+      if (
+        totalAplicado > 0 &&
+        clienteIdNumerico !==
+          movimientoActual.clienteId
+      ) {
+        return NextResponse.json(
+          {
+            status: "fail",
+            message:
+              "No puedes cambiar el cliente de un pago que ya tiene valores aplicados.",
+          },
+          { status: 409 }
         );
       }
 
@@ -462,7 +642,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             status: "fail",
-            message: "El cliente seleccionado no existe.",
+            message:
+              "El cliente seleccionado no existe.",
           },
           { status: 404 }
         );
@@ -480,7 +661,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             status: "fail",
-            message: "La fecha no es válida.",
+            message:
+              "La fecha no es válida.",
           },
           { status: 400 }
         );
@@ -497,13 +679,29 @@ export async function PATCH(request: NextRequest) {
             status: "fail",
             message:
               "El tipo de movimiento no es válido.",
-            tiposValidos: TIPOS_VALIDOS,
+            tiposValidos:
+              TIPOS_VALIDOS,
           },
           { status: 400 }
         );
       }
 
-      datosActualizacion.tipo = tipo;
+      if (
+        totalAplicado > 0 &&
+        !esTipoAplicable(tipo)
+      ) {
+        return NextResponse.json(
+          {
+            status: "fail",
+            message:
+              "No puedes convertir un pago aplicado en un débito o devolución.",
+          },
+          { status: 409 }
+        );
+      }
+
+      datosActualizacion.tipo =
+        tipo;
     }
 
     if (valor !== undefined) {
@@ -518,7 +716,27 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      datosActualizacion.valor = Number(valor);
+      const valorNumerico =
+        Number(valor);
+
+      if (
+        valorNumerico <
+        totalAplicado
+      ) {
+        return NextResponse.json(
+          {
+            status: "fail",
+            message:
+              `El movimiento tiene ${totalAplicado.toFixed(
+                2
+              )} aplicados. El nuevo valor no puede ser inferior.`,
+          },
+          { status: 409 }
+        );
+      }
+
+      datosActualizacion.valor =
+        valorNumerico;
     }
 
     if (concepto !== undefined) {
@@ -529,7 +747,8 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json(
           {
             status: "fail",
-            message: "El concepto no es válido.",
+            message:
+              "El concepto no es válido.",
           },
           { status: 400 }
         );
@@ -539,16 +758,26 @@ export async function PATCH(request: NextRequest) {
         concepto.trim();
     }
 
+    if (
+      referencia !== undefined
+    ) {
+      datosActualizacion.referencia =
+        normalizarTextoOpcional(
+          referencia
+        );
+    }
+
     if (notas !== undefined) {
       datosActualizacion.notas =
-        typeof notas === "string" &&
-        notas.trim()
-          ? notas.trim()
-          : null;
+        normalizarTextoOpcional(
+          notas
+        );
     }
 
     if (
-      Object.keys(datosActualizacion).length === 0
+      Object.keys(
+        datosActualizacion
+      ).length === 0
     ) {
       return NextResponse.json(
         {
@@ -565,7 +794,10 @@ export async function PATCH(request: NextRequest) {
         where: {
           id: movimientoId,
         },
-        data: datosActualizacion,
+
+        data:
+          datosActualizacion,
+
         include: {
           cliente: {
             select: {
@@ -573,15 +805,25 @@ export async function PATCH(request: NextRequest) {
               nombre: true,
             },
           },
+
+          aplicacionesPago: {
+            select: {
+              valorAplicado: true,
+            },
+          },
         },
       });
 
     return NextResponse.json({
       status: "success",
-      message: "Movimiento actualizado correctamente.",
-      movimiento: serializarMovimiento(
-        movimientoActualizado
-      ),
+
+      message:
+        "Movimiento actualizado correctamente.",
+
+      movimiento:
+        serializarMovimiento(
+          movimientoActualizado
+        ),
     });
   } catch (error) {
     console.error(
@@ -602,15 +844,18 @@ export async function PATCH(request: NextRequest) {
 
 /*
  * DELETE
- *
- * Ejemplo:
- *
- * /api/lp/movimientos-clientes?id=1
  */
-export async function DELETE(request: NextRequest) {
+export async function DELETE(
+  request: NextRequest
+) {
   try {
-    const { searchParams } = new URL(request.url);
-    const idParam = searchParams.get("id");
+    const { searchParams } = new URL(
+      request.url
+    );
+
+    const idParam =
+      searchParams.get("id");
+
     const id = Number(idParam);
 
     if (
@@ -621,7 +866,8 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El id del movimiento no es válido.",
+          message:
+            "El id del movimiento no es válido.",
         },
         { status: 400 }
       );
@@ -632,8 +878,13 @@ export async function DELETE(request: NextRequest) {
         where: {
           id,
         },
-        select: {
-          id: true,
+
+        include: {
+          aplicacionesPago: {
+            select: {
+              valorAplicado: true,
+            },
+          },
         },
       });
 
@@ -641,9 +892,26 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json(
         {
           status: "fail",
-          message: "El movimiento no existe.",
+          message:
+            "El movimiento no existe.",
         },
         { status: 404 }
+      );
+    }
+
+    const totalAplicado =
+      calcularTotalAplicado(
+        movimiento.aplicacionesPago
+      );
+
+    if (totalAplicado > 0) {
+      return NextResponse.json(
+        {
+          status: "fail",
+          message:
+            "No puedes eliminar un pago que ya tiene valores aplicados a ciclos. Primero elimina sus aplicaciones.",
+        },
+        { status: 409 }
       );
     }
 
@@ -655,7 +923,8 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({
       status: "success",
-      message: "Movimiento eliminado correctamente.",
+      message:
+        "Movimiento eliminado correctamente.",
     });
   } catch (error) {
     console.error(
