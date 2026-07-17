@@ -1,9 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
-
-function crearFechaLocal(fecha: string) {
-  return new Date(`${fecha}T12:00:00.000Z`);
-}
+import { LPMovimientoClienteTipo } from "@prisma/client";
 
 function fechaKey(fecha: Date | null) {
   if (!fecha) return null;
@@ -11,293 +8,430 @@ function fechaKey(fecha: Date | null) {
   return fecha.toISOString().split("T")[0];
 }
 
-function calcularValorMovimiento(
-  tipo: "ABONO" | "AJUSTE_CREDITO" | "AJUSTE_DEBITO" | "DEVOLUCION",
-  valor: number
+function sumarValores(
+  items: Array<{
+    valor: unknown;
+  }>
 ) {
-  if (tipo === "ABONO" || tipo === "AJUSTE_CREDITO") {
-    return valor;
-  }
-
-  return -valor;
+  return items.reduce(
+    (total, item) => total + Number(item.valor || 0),
+    0
+  );
 }
 
-/*
- * GET
- *
- * Devuelve todos los clientes con su configuración y saldo actual.
- */
 export async function GET() {
   try {
     const clientes = await prisma.lPCliente.findMany({
+      where: {
+        activo: true,
+      },
       select: {
         id: true,
         nombre: true,
-        usaSaldoAnticipado: true,
-        fechaInicioSaldo: true,
+
+        unidades: {
+          select: {
+            trabajos: {
+              select: {
+                id: true,
+                fecha: true,
+                precio: true,
+              },
+              orderBy: [
+                {
+                  fecha: "asc",
+                },
+                {
+                  id: "asc",
+                },
+              ],
+            },
+          },
+        },
+
+        movimientosFinancieros: {
+          select: {
+            id: true,
+            fecha: true,
+            tipo: true,
+            valor: true,
+
+            aplicacionesPago: {
+              select: {
+                valorAplicado: true,
+              },
+            },
+          },
+          orderBy: [
+            {
+              fecha: "asc",
+            },
+            {
+              id: "asc",
+            },
+          ],
+        },
+
+        ciclosFinancieros: {
+          select: {
+            id: true,
+            tipo: true,
+            fechaInicio: true,
+            fechaFin: true,
+
+            aplicacionesPago: {
+              select: {
+                valorAplicado: true,
+              },
+            },
+          },
+          orderBy: [
+            {
+              fechaInicio: "asc",
+            },
+            {
+              id: "asc",
+            },
+          ],
+        },
       },
       orderBy: {
         nombre: "asc",
       },
     });
 
-    const clientesConSaldo = await Promise.all(
+    const clientesConEstado = await Promise.all(
       clientes.map(async (cliente) => {
-        if (
-          !cliente.usaSaldoAnticipado ||
-          !cliente.fechaInicioSaldo
-        ) {
-          return {
-            id: cliente.id,
-            nombre: cliente.nombre,
-            usaSaldoAnticipado: cliente.usaSaldoAnticipado,
-            fechaInicioSaldo: fechaKey(cliente.fechaInicioSaldo),
+        /*
+         * Unificamos los trabajos de todas las unidades
+         * pertenecientes al cliente.
+         */
+        const trabajos = cliente.unidades
+          .flatMap((unidad) => unidad.trabajos)
+          .sort((a, b) => {
+            const diferenciaFecha =
+              a.fecha.getTime() - b.fecha.getTime();
 
-            totalAbonos: 0,
-            totalCreditos: 0,
-            totalTrabajos: 0,
-            cantidadTrabajos: 0,
-            totalDebitosManuales: 0,
-            saldoActual: 0,
-          };
-        }
-
-        const [movimientos, trabajos] = await Promise.all([
-          prisma.lPMovimientoCliente.findMany({
-            where: {
-              clienteId: cliente.id,
-              fecha: {
-                gte: cliente.fechaInicioSaldo,
-              },
-            },
-            select: {
-              tipo: true,
-              valor: true,
-            },
-          }),
-
-          prisma.lPTrabajoDiario.findMany({
-            where: {
-              unidad: {
-                clienteId: cliente.id,
-              },
-              fecha: {
-                gte: cliente.fechaInicioSaldo,
-              },
-            },
-            select: {
-              precio: true,
-            },
-          }),
-        ]);
-
-        const resumenMovimientos = movimientos.reduce(
-          (acc, movimiento) => {
-            const valor = Number(movimiento.valor || 0);
-
-            const valorFirmado = calcularValorMovimiento(
-              movimiento.tipo,
-              valor
-            );
-
-            if (movimiento.tipo === "ABONO") {
-              acc.totalAbonos += valor;
+            if (diferenciaFecha !== 0) {
+              return diferenciaFecha;
             }
 
-            if (
-              movimiento.tipo === "ABONO" ||
-              movimiento.tipo === "AJUSTE_CREDITO"
-            ) {
-              acc.totalCreditos += valor;
-            }
+            return a.id - b.id;
+          });
 
-            if (
-              movimiento.tipo === "AJUSTE_DEBITO" ||
-              movimiento.tipo === "DEVOLUCION"
-            ) {
-              acc.totalDebitosManuales += valor;
-            }
-
-            acc.saldoMovimientos += valorFirmado;
-
-            return acc;
-          },
-          {
-            totalAbonos: 0,
-            totalCreditos: 0,
-            totalDebitosManuales: 0,
-            saldoMovimientos: 0,
-          }
-        );
+        const primerTrabajo = trabajos[0] || null;
+        const ultimoTrabajo =
+          trabajos.length > 0
+            ? trabajos[trabajos.length - 1]
+            : null;
 
         const totalTrabajos = trabajos.reduce(
-          (acc, trabajo) => acc + Number(trabajo.precio || 0),
+          (total, trabajo) =>
+            total + Number(trabajo.precio || 0),
           0
         );
+
+        const abonos =
+          cliente.movimientosFinancieros.filter(
+            (movimiento) =>
+              movimiento.tipo ===
+              LPMovimientoClienteTipo.ABONO
+          );
+
+        const ajustesCredito =
+          cliente.movimientosFinancieros.filter(
+            (movimiento) =>
+              movimiento.tipo ===
+              LPMovimientoClienteTipo.AJUSTE_CREDITO
+          );
+
+        const ajustesDebito =
+          cliente.movimientosFinancieros.filter(
+            (movimiento) =>
+              movimiento.tipo ===
+              LPMovimientoClienteTipo.AJUSTE_DEBITO
+          );
+
+        const devoluciones =
+          cliente.movimientosFinancieros.filter(
+            (movimiento) =>
+              movimiento.tipo ===
+              LPMovimientoClienteTipo.DEVOLUCION
+          );
+
+        const totalPagos = sumarValores(abonos);
+        const totalAjustesCredito =
+          sumarValores(ajustesCredito);
+
+        const totalAjustesDebito =
+          sumarValores(ajustesDebito);
+
+        const totalDevoluciones =
+          sumarValores(devoluciones);
+
+        const totalCreditos =
+          totalPagos + totalAjustesCredito;
+
+        const totalDebitos =
+          totalTrabajos +
+          totalAjustesDebito +
+          totalDevoluciones;
+
+        /*
+         * Saldo contable:
+         *
+         * positivo = dinero a favor del cliente
+         * cero     = cuenta conciliada
+         * negativo = dinero pendiente para L&P
+         */
+        const saldoCuenta =
+          totalCreditos - totalDebitos;
+
+        const saldoPendiente =
+          saldoCuenta < 0
+            ? Math.abs(saldoCuenta)
+            : 0;
+
+        const saldoAFavor =
+          saldoCuenta > 0
+            ? saldoCuenta
+            : 0;
+
+        /*
+         * Solo los ABONOS representan pagos recibidos.
+         *
+         * La parte que todavía no esté aplicada a ciclos
+         * queda disponible como anticipo o excedente.
+         */
+        const totalPagosAplicados = abonos.reduce(
+          (total, movimiento) => {
+            const aplicadoMovimiento =
+              movimiento.aplicacionesPago.reduce(
+                (subtotal, aplicacion) =>
+                  subtotal +
+                  Number(
+                    aplicacion.valorAplicado || 0
+                  ),
+                0
+              );
+
+            return total + aplicadoMovimiento;
+          },
+          0
+        );
+
+        const pagosSinAplicar = Math.max(
+          0,
+          totalPagos - totalPagosAplicados
+        );
+
+        /*
+         * Resumen de ciclos.
+         *
+         * El valor trabajado se consulta dinámicamente
+         * porque no está almacenado en LPCicloCliente.
+         */
+        const ciclosCalculados = await Promise.all(
+          cliente.ciclosFinancieros.map(
+            async (ciclo) => {
+              const trabajosCiclo =
+                await prisma.lPTrabajoDiario.findMany({
+                  where: {
+                    unidad: {
+                      clienteId: cliente.id,
+                    },
+                    fecha: {
+                      gte: ciclo.fechaInicio,
+                      lte: ciclo.fechaFin,
+                    },
+                  },
+                  select: {
+                    precio: true,
+                  },
+                });
+
+              const totalTrabajadoCiclo =
+                trabajosCiclo.reduce(
+                  (total, trabajo) =>
+                    total +
+                    Number(trabajo.precio || 0),
+                  0
+                );
+
+              const totalAplicadoCiclo =
+                ciclo.aplicacionesPago.reduce(
+                  (total, aplicacion) =>
+                    total +
+                    Number(
+                      aplicacion.valorAplicado || 0
+                    ),
+                  0
+                );
+
+              const diferencia =
+                totalAplicadoCiclo -
+                totalTrabajadoCiclo;
+
+              const estado =
+                diferencia === 0
+                  ? "CONCILIADO"
+                  : totalAplicadoCiclo === 0
+                    ? "SIN_PAGO"
+                    : "PAGO_PARCIAL";
+
+              return {
+                id: ciclo.id,
+                tipo: ciclo.tipo,
+                fechaInicio: fechaKey(
+                  ciclo.fechaInicio
+                ),
+                fechaFin: fechaKey(ciclo.fechaFin),
+                totalTrabajado:
+                  totalTrabajadoCiclo,
+                totalAplicado:
+                  totalAplicadoCiclo,
+                saldoPendiente:
+                  diferencia < 0
+                    ? Math.abs(diferencia)
+                    : 0,
+                estado,
+              };
+            }
+          )
+        );
+
+        const ciclosConciliados =
+          ciclosCalculados.filter(
+            (ciclo) =>
+              ciclo.estado === "CONCILIADO"
+          ).length;
+
+        const ciclosPendientes =
+          ciclosCalculados.filter(
+            (ciclo) =>
+              ciclo.estado !== "CONCILIADO"
+          ).length;
+
+        const ultimoCiclo =
+          ciclosCalculados.length > 0
+            ? ciclosCalculados[
+                ciclosCalculados.length - 1
+              ]
+            : null;
+
+        let estadoCuenta:
+          | "SIN_MOVIMIENTOS"
+          | "CONCILIADO"
+          | "PENDIENTE"
+          | "SALDO_A_FAVOR";
+
+        if (
+          trabajos.length === 0 &&
+          cliente.movimientosFinancieros.length === 0
+        ) {
+          estadoCuenta = "SIN_MOVIMIENTOS";
+        } else if (saldoCuenta < 0) {
+          estadoCuenta = "PENDIENTE";
+        } else if (saldoCuenta > 0) {
+          estadoCuenta = "SALDO_A_FAVOR";
+        } else {
+          estadoCuenta = "CONCILIADO";
+        }
 
         return {
           id: cliente.id,
           nombre: cliente.nombre,
-          usaSaldoAnticipado: cliente.usaSaldoAnticipado,
-          fechaInicioSaldo: fechaKey(cliente.fechaInicioSaldo),
 
-          totalAbonos: resumenMovimientos.totalAbonos,
-          totalCreditos: resumenMovimientos.totalCreditos,
+          fechaPrimerTrabajo: fechaKey(
+            primerTrabajo?.fecha || null
+          ),
+
+          fechaUltimoTrabajo: fechaKey(
+            ultimoTrabajo?.fecha || null
+          ),
+
           totalTrabajos,
           cantidadTrabajos: trabajos.length,
-          totalDebitosManuales:
-            resumenMovimientos.totalDebitosManuales,
 
-          saldoActual:
-            resumenMovimientos.saldoMovimientos - totalTrabajos,
+          totalPagos,
+          totalAjustesCredito,
+          totalAjustesDebito,
+          totalDevoluciones,
+
+          totalCreditos,
+          totalDebitos,
+
+          saldoCuenta,
+          saldoPendiente,
+          saldoAFavor,
+
+          totalPagosAplicados,
+          pagosSinAplicar,
+
+          cantidadCiclos:
+            ciclosCalculados.length,
+
+          ciclosConciliados,
+          ciclosPendientes,
+
+          ultimoCiclo,
+          estadoCuenta,
         };
       })
     );
 
-    return NextResponse.json({
-      status: "success",
-      clientes: clientesConSaldo,
-    });
-  } catch (error) {
-    console.error(
-      "Error consultando saldos de clientes:",
-      error
-    );
+    const resumenGeneral =
+      clientesConEstado.reduce(
+        (resumen, cliente) => {
+          resumen.totalFacturado +=
+            cliente.totalTrabajos;
 
-    return NextResponse.json(
-      {
-        status: "fail",
-        message: "Error al consultar los saldos de clientes.",
-      },
-      { status: 500 }
-    );
-  }
-}
+          resumen.totalRecibido +=
+            cliente.totalPagos;
 
-/*
- * PATCH
- *
- * Activa, desactiva o cambia la fecha inicial.
- *
- * Body:
- *
- * {
- *   "clienteId": 3,
- *   "usaSaldoAnticipado": true,
- *   "fechaInicioSaldo": "2026-07-15"
- * }
- */
-export async function PATCH(request: NextRequest) {
-  try {
-    const body = await request.json();
+          resumen.totalPendiente +=
+            cliente.saldoPendiente;
 
-    const {
-      clienteId,
-      usaSaldoAnticipado,
-      fechaInicioSaldo,
-    } = body;
+          resumen.totalSaldoAFavor +=
+            cliente.saldoAFavor;
 
-    const clienteIdNumerico = Number(clienteId);
+          resumen.totalPagosSinAplicar +=
+            cliente.pagosSinAplicar;
 
-    if (
-      !Number.isInteger(clienteIdNumerico) ||
-      clienteIdNumerico <= 0
-    ) {
-      return NextResponse.json(
-        {
-          status: "fail",
-          message: "El cliente indicado no es válido.",
+          if (
+            cliente.estadoCuenta === "PENDIENTE"
+          ) {
+            resumen.clientesPendientes += 1;
+          }
+
+          if (
+            cliente.estadoCuenta ===
+            "SALDO_A_FAVOR"
+          ) {
+            resumen.clientesConSaldoAFavor += 1;
+          }
+
+          return resumen;
         },
-        { status: 400 }
-      );
-    }
-
-    if (typeof usaSaldoAnticipado !== "boolean") {
-      return NextResponse.json(
         {
-          status: "fail",
-          message:
-            "Debes indicar si el cliente usa saldo anticipado.",
-        },
-        { status: 400 }
+          totalFacturado: 0,
+          totalRecibido: 0,
+          totalPendiente: 0,
+          totalSaldoAFavor: 0,
+          totalPagosSinAplicar: 0,
+          clientesPendientes: 0,
+          clientesConSaldoAFavor: 0,
+        }
       );
-    }
-
-    if (
-      usaSaldoAnticipado &&
-      (
-        typeof fechaInicioSaldo !== "string" ||
-        !fechaInicioSaldo.trim()
-      )
-    ) {
-      return NextResponse.json(
-        {
-          status: "fail",
-          message:
-            "Debes indicar la fecha de inicio del saldo.",
-        },
-        { status: 400 }
-      );
-    }
-
-    const clienteExiste = await prisma.lPCliente.findUnique({
-      where: {
-        id: clienteIdNumerico,
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (!clienteExiste) {
-      return NextResponse.json(
-        {
-          status: "fail",
-          message: "El cliente no existe.",
-        },
-        { status: 404 }
-      );
-    }
-
-    const clienteActualizado = await prisma.lPCliente.update({
-      where: {
-        id: clienteIdNumerico,
-      },
-      data: {
-        usaSaldoAnticipado,
-
-        /*
-         * Al desactivarlo dejamos la fecha en null.
-         * Los movimientos manuales no se eliminan.
-         */
-        fechaInicioSaldo: usaSaldoAnticipado
-          ? crearFechaLocal(fechaInicioSaldo)
-          : null,
-      },
-      select: {
-        id: true,
-        nombre: true,
-        usaSaldoAnticipado: true,
-        fechaInicioSaldo: true,
-      },
-    });
 
     return NextResponse.json({
       status: "success",
-      message: usaSaldoAnticipado
-        ? "Saldo anticipado activado correctamente."
-        : "Saldo anticipado desactivado correctamente.",
-
-      cliente: {
-        ...clienteActualizado,
-        fechaInicioSaldo: fechaKey(
-          clienteActualizado.fechaInicioSaldo
-        ),
-      },
+      resumen: resumenGeneral,
+      clientes: clientesConEstado,
     });
   } catch (error) {
     console.error(
-      "Error actualizando configuración de saldo:",
+      "Error consultando cuentas de clientes:",
       error
     );
 
@@ -305,9 +439,11 @@ export async function PATCH(request: NextRequest) {
       {
         status: "fail",
         message:
-          "Error al actualizar la configuración del cliente.",
+          "Error al consultar las cuentas de clientes.",
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }

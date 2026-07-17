@@ -10,7 +10,9 @@ function crearFinDia(fecha: string) {
   return new Date(`${fecha}T23:59:59.999Z`);
 }
 
-function fechaKey(fecha: Date) {
+function fechaKey(fecha: Date | null) {
+  if (!fecha) return null;
+
   return fecha.toISOString().split("T")[0];
 }
 
@@ -27,10 +29,12 @@ function obtenerNaturalezaMovimiento(
   return "DEBITO";
 }
 
-function descripcionTipoMovimiento(tipo: LPMovimientoClienteTipo) {
+function descripcionTipoMovimiento(
+  tipo: LPMovimientoClienteTipo
+) {
   switch (tipo) {
     case LPMovimientoClienteTipo.ABONO:
-      return "Abono recibido";
+      return "Pago recibido";
 
     case LPMovimientoClienteTipo.AJUSTE_CREDITO:
       return "Ajuste a favor";
@@ -81,9 +85,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const fechaDesdeFiltro = desde ? crearInicioDia(desde) : null;
-    const fechaHasta = hasta ? crearFinDia(hasta) : null;
-
     const cliente = await prisma.lPCliente.findUnique({
       where: {
         id: clienteId,
@@ -91,8 +92,6 @@ export async function GET(request: NextRequest) {
       select: {
         id: true,
         nombre: true,
-        usaSaldoAnticipado: true,
-        fechaInicioSaldo: true,
       },
     });
 
@@ -107,18 +106,77 @@ export async function GET(request: NextRequest) {
     }
 
     /*
-     * Si el cliente todavía no usa saldo anticipado,
-     * devolvemos una respuesta válida sin movimientos.
+     * Buscamos el primer trabajo y el primer movimiento.
+     *
+     * Normalmente el estado comienza con el primer trabajo.
+     * Si existe un pago anterior —por ejemplo un anticipo—
+     * también debe formar parte del estado de cuenta.
      */
-    if (!cliente.usaSaldoAnticipado) {
+    const [primerTrabajo, primerMovimiento] = await Promise.all([
+      prisma.lPTrabajoDiario.findFirst({
+        where: {
+          unidad: {
+            clienteId,
+          },
+        },
+        select: {
+          fecha: true,
+        },
+        orderBy: [
+          {
+            fecha: "asc",
+          },
+          {
+            id: "asc",
+          },
+        ],
+      }),
+
+      prisma.lPMovimientoCliente.findFirst({
+        where: {
+          clienteId,
+        },
+        select: {
+          fecha: true,
+        },
+        orderBy: [
+          {
+            fecha: "asc",
+          },
+          {
+            id: "asc",
+          },
+        ],
+      }),
+    ]);
+
+    const fechasIniciales = [
+      primerTrabajo?.fecha,
+      primerMovimiento?.fecha,
+    ].filter((fecha): fecha is Date => Boolean(fecha));
+
+    const fechaInicioCuenta =
+      fechasIniciales.length > 0
+        ? new Date(
+            Math.min(
+              ...fechasIniciales.map((fecha) =>
+                fecha.getTime()
+              )
+            )
+          )
+        : null;
+
+    /*
+     * Cliente sin trabajos ni movimientos.
+     */
+    if (!fechaInicioCuenta) {
       return NextResponse.json({
         status: "success",
 
         cliente: {
           id: cliente.id,
           nombre: cliente.nombre,
-          usaSaldoAnticipado: false,
-          fechaInicioSaldo: null,
+          fechaInicioCuenta: null,
         },
 
         filtros: {
@@ -138,52 +196,41 @@ export async function GET(request: NextRequest) {
           totalCreditos: 0,
           totalDebitos: 0,
           saldoFinal: 0,
+          saldoPendiente: 0,
+          saldoAFavor: 0,
         },
 
         movimientos: [],
-        configuracionPendiente: true,
-
-        message:
-          "Este cliente todavía no está configurado para trabajar con saldo anticipado.",
       });
     }
 
-    if (!cliente.fechaInicioSaldo) {
-      return NextResponse.json(
-        {
-          status: "fail",
-          message:
-            "El cliente usa saldo anticipado, pero no tiene fecha de inicio configurada.",
-        },
-        { status: 400 }
-      );
-    }
+    const fechaDesdeFiltro = desde
+      ? crearInicioDia(desde)
+      : null;
+
+    const fechaHasta = hasta
+      ? crearFinDia(hasta)
+      : null;
 
     /*
-     * Después de esta validación, TypeScript ya sabe que
-     * fechaInicioSaldo es un Date.
+     * El rango nunca puede comenzar antes del primer
+     * movimiento real de la cuenta.
      */
-    const fechaInicioAcuerdo: Date = cliente.fechaInicioSaldo;
-
-    /*
-     * La fecha real será la más reciente entre:
-     *
-     * - fechaInicioSaldo
-     * - filtro desde
-     */
-    const fechaDesdeReal: Date =
+    const fechaDesdeReal =
       fechaDesdeFiltro &&
-      fechaDesdeFiltro.getTime() > fechaInicioAcuerdo.getTime()
+      fechaDesdeFiltro.getTime() >
+        fechaInicioCuenta.getTime()
         ? fechaDesdeFiltro
-        : fechaInicioAcuerdo;
+        : fechaInicioCuenta;
 
     /*
-     * Si el rango termina antes de que comience el acuerdo,
+     * Si el filtro termina antes del inicio de la cuenta,
      * devolvemos una respuesta vacía.
      */
     if (
       fechaHasta &&
-      fechaDesdeReal.getTime() > fechaHasta.getTime()
+      fechaHasta.getTime() <
+        fechaInicioCuenta.getTime()
     ) {
       return NextResponse.json({
         status: "success",
@@ -191,14 +238,15 @@ export async function GET(request: NextRequest) {
         cliente: {
           id: cliente.id,
           nombre: cliente.nombre,
-          usaSaldoAnticipado: true,
-          fechaInicioSaldo: fechaKey(fechaInicioAcuerdo),
+          fechaInicioCuenta:
+            fechaKey(fechaInicioCuenta),
         },
 
         filtros: {
           desde,
           hasta,
-          fechaDesdeReal: fechaKey(fechaDesdeReal),
+          fechaDesdeReal:
+            fechaKey(fechaDesdeReal),
         },
 
         resumen: {
@@ -212,22 +260,17 @@ export async function GET(request: NextRequest) {
           totalCreditos: 0,
           totalDebitos: 0,
           saldoFinal: 0,
+          saldoPendiente: 0,
+          saldoAFavor: 0,
         },
 
         movimientos: [],
-        configuracionPendiente: false,
-
-        message:
-          "No hay movimientos porque el rango termina antes del inicio del saldo anticipado.",
       });
     }
 
-    /*
-     * Solo existe período anterior cuando el filtro desde
-     * es posterior al inicio del acuerdo.
-     */
     const tienePeriodoAnterior =
-      fechaDesdeReal.getTime() > fechaInicioAcuerdo.getTime();
+      fechaDesdeReal.getTime() >
+      fechaInicioCuenta.getTime();
 
     const [
       movimientosPeriodo,
@@ -235,23 +278,28 @@ export async function GET(request: NextRequest) {
       movimientosAnteriores,
       trabajosAnteriores,
     ] = await Promise.all([
-      /*
-       * Movimientos manuales del período.
-       */
       prisma.lPMovimientoCliente.findMany({
         where: {
           clienteId,
           fecha: {
             gte: fechaDesdeReal,
-            ...(fechaHasta ? { lte: fechaHasta } : {}),
+            ...(fechaHasta
+              ? {
+                  lte: fechaHasta,
+                }
+              : {}),
           },
         },
-        orderBy: [{ fecha: "asc" }, { createdAt: "asc" }],
+        orderBy: [
+          {
+            fecha: "asc",
+          },
+          {
+            createdAt: "asc",
+          },
+        ],
       }),
 
-      /*
-       * Trabajos del período.
-       */
       prisma.lPTrabajoDiario.findMany({
         where: {
           unidad: {
@@ -259,7 +307,11 @@ export async function GET(request: NextRequest) {
           },
           fecha: {
             gte: fechaDesdeReal,
-            ...(fechaHasta ? { lte: fechaHasta } : {}),
+            ...(fechaHasta
+              ? {
+                  lte: fechaHasta,
+                }
+              : {}),
           },
         },
         include: {
@@ -269,19 +321,22 @@ export async function GET(request: NextRequest) {
             },
           },
         },
-        orderBy: [{ fecha: "asc" }, { createdAt: "asc" }],
+        orderBy: [
+          {
+            fecha: "asc",
+          },
+          {
+            createdAt: "asc",
+          },
+        ],
       }),
 
-      /*
-       * Movimientos anteriores al filtro para calcular
-       * el saldo inicial del rango.
-       */
       tienePeriodoAnterior
         ? prisma.lPMovimientoCliente.findMany({
             where: {
               clienteId,
               fecha: {
-                gte: fechaInicioAcuerdo,
+                gte: fechaInicioCuenta,
                 lt: fechaDesdeReal,
               },
             },
@@ -292,10 +347,6 @@ export async function GET(request: NextRequest) {
           })
         : Promise.resolve([]),
 
-      /*
-       * Trabajos anteriores al filtro para calcular
-       * el saldo inicial del rango.
-       */
       tienePeriodoAnterior
         ? prisma.lPTrabajoDiario.findMany({
             where: {
@@ -303,7 +354,7 @@ export async function GET(request: NextRequest) {
                 clienteId,
               },
               fecha: {
-                gte: fechaInicioAcuerdo,
+                gte: fechaInicioCuenta,
                 lt: fechaDesdeReal,
               },
             },
@@ -315,48 +366,65 @@ export async function GET(request: NextRequest) {
     ]);
 
     /*
-     * SALDO ANTERIOR AL RANGO
+     * Saldo anterior al rango seleccionado.
      */
+    const saldoMovimientosAnteriores =
+      movimientosAnteriores.reduce(
+        (total, movimiento) => {
+          const valor = Number(
+            movimiento.valor || 0
+          );
 
-    const saldoMovimientosAnteriores = movimientosAnteriores.reduce(
-      (acc, movimiento) => {
-        const valor = Number(movimiento.valor || 0);
-        const naturaleza = obtenerNaturalezaMovimiento(movimiento.tipo);
+          const naturaleza =
+            obtenerNaturalezaMovimiento(
+              movimiento.tipo
+            );
 
-        return naturaleza === "CREDITO"
-          ? acc + valor
-          : acc - valor;
-      },
-      0
-    );
+          return naturaleza === "CREDITO"
+            ? total + valor
+            : total - valor;
+        },
+        0
+      );
 
-    const totalTrabajosAnteriores = trabajosAnteriores.reduce(
-      (acc, trabajo) => acc + Number(trabajo.precio || 0),
-      0
-    );
+    const totalTrabajosAnteriores =
+      trabajosAnteriores.reduce(
+        (total, trabajo) =>
+          total +
+          Number(trabajo.precio || 0),
+        0
+      );
 
     const saldoInicial =
-      saldoMovimientosAnteriores - totalTrabajosAnteriores;
+      saldoMovimientosAnteriores -
+      totalTrabajosAnteriores;
 
     /*
-     * NORMALIZAR MOVIMIENTOS MANUALES
+     * Movimientos manuales normalizados.
      */
+    const movimientosManualesNormalizados =
+      movimientosPeriodo.map((movimiento) => {
+        const valor = Number(
+          movimiento.valor || 0
+        );
 
-    const movimientosManualesNormalizados = movimientosPeriodo.map(
-      (movimiento) => {
-        const valor = Number(movimiento.valor || 0);
-        const naturaleza = obtenerNaturalezaMovimiento(movimiento.tipo);
-        const esCredito = naturaleza === "CREDITO";
+        const naturaleza =
+          obtenerNaturalezaMovimiento(
+            movimiento.tipo
+          );
+
+        const esCredito =
+          naturaleza === "CREDITO";
 
         return {
           id: `movimiento-${movimiento.id}`,
           referenciaId: movimiento.id,
-          fecha: fechaKey(movimiento.fecha),
+
+          fecha: fechaKey(movimiento.fecha) || "",
           fechaOrden: movimiento.fecha.getTime(),
 
           /*
            * En una misma fecha:
-           *
            * 0 = créditos
            * 1 = trabajos
            * 2 = débitos manuales
@@ -369,9 +437,14 @@ export async function GET(request: NextRequest) {
 
           concepto:
             movimiento.concepto ||
-            descripcionTipoMovimiento(movimiento.tipo),
+            descripcionTipoMovimiento(
+              movimiento.tipo
+            ),
 
-          descripcion: descripcionTipoMovimiento(movimiento.tipo),
+          descripcion:
+            descripcionTipoMovimiento(
+              movimiento.tipo
+            ),
 
           cliente: cliente.nombre,
           edificio: null,
@@ -382,160 +455,197 @@ export async function GET(request: NextRequest) {
           credito: esCredito ? valor : 0,
           debito: esCredito ? 0 : valor,
 
+          referencia:
+            movimiento.referencia || null,
+
           notas: movimiento.notas || null,
-          createdAt: movimiento.createdAt.getTime(),
+
+          createdAt:
+            movimiento.createdAt.getTime(),
         };
-      }
-    );
+      });
 
     /*
-     * NORMALIZAR TRABAJOS
+     * Trabajos normalizados.
+     *
+     * Este detalle después servirá para mostrar todos
+     * los trabajos realizados dentro de cada ciclo.
      */
+    const trabajosNormalizados =
+      trabajosPeriodo.map((trabajo) => {
+        const habitaciones =
+          trabajo.unidad?.habitaciones;
 
-    const trabajosNormalizados = trabajosPeriodo.map((trabajo) => {
-      const habitaciones = trabajo.unidad?.habitaciones;
-      const banos = trabajo.unidad?.banos;
+        const banos =
+          trabajo.unidad?.banos;
 
-      const tipoUnidad =
-        habitaciones !== null &&
-        habitaciones !== undefined &&
-        banos !== null &&
-        banos !== undefined
-          ? `${habitaciones}/${banos}`
-          : null;
+        const tipoUnidad =
+          habitaciones !== null &&
+          habitaciones !== undefined &&
+          banos !== null &&
+          banos !== undefined
+            ? `${habitaciones}/${banos}`
+            : null;
 
-      const precio = Number(trabajo.precio || 0);
+        const precio = Number(
+          trabajo.precio || 0
+        );
 
-      return {
-        id: `trabajo-${trabajo.id}`,
-        referenciaId: trabajo.id,
-        fecha: fechaKey(trabajo.fecha),
-        fechaOrden: trabajo.fecha.getTime(),
-        prioridadOrden: 1,
+        return {
+          id: `trabajo-${trabajo.id}`,
+          referenciaId: trabajo.id,
 
-        origen: "TRABAJO" as const,
-        tipo: trabajo.tipo,
-        naturaleza: "DEBITO" as const,
+          fecha: fechaKey(trabajo.fecha) || "",
+          fechaOrden: trabajo.fecha.getTime(),
+          prioridadOrden: 1,
 
-        concepto: "Cleaning service",
-        descripcion: "Servicio de limpieza",
+          origen: "TRABAJO" as const,
+          tipo: trabajo.tipo,
+          naturaleza: "DEBITO" as const,
 
-        cliente: cliente.nombre,
-        edificio:
-          trabajo.unidad?.edificio?.nombre || "Sin edificio",
+          concepto: "Cleaning service",
+          descripcion: "Servicio de limpieza",
 
-        unidad:
-          trabajo.unidad?.nombre ||
-          trabajo.unidadManual ||
-          "Unidad eventual",
+          cliente: cliente.nombre,
 
-        tipoUnidad,
-        tipoTrabajo: trabajo.tipo,
+          edificio:
+            trabajo.unidad?.edificio?.nombre ||
+            "Sin edificio",
 
-        credito: 0,
-        debito: precio,
+          unidad:
+            trabajo.unidad?.nombre ||
+            trabajo.unidadManual ||
+            "Unidad eventual",
 
-        notas: trabajo.notas || null,
-        createdAt: trabajo.createdAt.getTime(),
-      };
-    });
+          tipoUnidad,
+          tipoTrabajo: trabajo.tipo,
+
+          credito: 0,
+          debito: precio,
+
+          referencia: null,
+          notas: trabajo.notas || null,
+
+          createdAt:
+            trabajo.createdAt.getTime(),
+        };
+      });
 
     /*
-     * UNIFICAR Y ORDENAR LOS MOVIMIENTOS
+     * Unificamos trabajos y movimientos.
      */
-
     const movimientosOrdenados = [
       ...movimientosManualesNormalizados,
       ...trabajosNormalizados,
     ].sort((a, b) => {
-      if (a.fechaOrden !== b.fechaOrden) {
-        return a.fechaOrden - b.fechaOrden;
+      if (
+        a.fechaOrden !== b.fechaOrden
+      ) {
+        return (
+          a.fechaOrden - b.fechaOrden
+        );
       }
 
-      if (a.prioridadOrden !== b.prioridadOrden) {
-        return a.prioridadOrden - b.prioridadOrden;
+      if (
+        a.prioridadOrden !==
+        b.prioridadOrden
+      ) {
+        return (
+          a.prioridadOrden -
+          b.prioridadOrden
+        );
       }
 
       return a.createdAt - b.createdAt;
     });
 
     /*
-     * CALCULAR EL SALDO ACUMULADO
+     * Calculamos el saldo acumulado.
      */
-
     let saldoAcumulado = saldoInicial;
 
-    const movimientos = movimientosOrdenados.map((movimiento) => {
-      saldoAcumulado += movimiento.credito;
-      saldoAcumulado -= movimiento.debito;
+    const movimientos =
+      movimientosOrdenados.map(
+        (movimiento) => {
+          saldoAcumulado +=
+            movimiento.credito;
 
-      const {
-        fechaOrden,
-        prioridadOrden,
-        createdAt,
-        ...movimientoPublico
-      } = movimiento;
+          saldoAcumulado -=
+            movimiento.debito;
 
-      return {
-        ...movimientoPublico,
-        saldo: saldoAcumulado,
-      };
-    });
+          const {
+            fechaOrden,
+            prioridadOrden,
+            createdAt,
+            ...movimientoPublico
+          } = movimiento;
 
-    /*
-     * RESUMEN DE MOVIMIENTOS MANUALES DEL PERÍODO
-     */
-
-    const resumenMovimientos = movimientosPeriodo.reduce(
-      (acc, movimiento) => {
-        const valor = Number(movimiento.valor || 0);
-
-        switch (movimiento.tipo) {
-          case LPMovimientoClienteTipo.ABONO:
-            acc.abonos += valor;
-            acc.creditos += valor;
-            break;
-
-          case LPMovimientoClienteTipo.AJUSTE_CREDITO:
-            acc.ajustesCredito += valor;
-            acc.creditos += valor;
-            break;
-
-          case LPMovimientoClienteTipo.AJUSTE_DEBITO:
-            acc.ajustesDebito += valor;
-            acc.debitosManuales += valor;
-            break;
-
-          case LPMovimientoClienteTipo.DEVOLUCION:
-            acc.devoluciones += valor;
-            acc.debitosManuales += valor;
-            break;
+          return {
+            ...movimientoPublico,
+            saldo: saldoAcumulado,
+          };
         }
-
-        return acc;
-      },
-      {
-        abonos: 0,
-        ajustesCredito: 0,
-        ajustesDebito: 0,
-        devoluciones: 0,
-        creditos: 0,
-        debitosManuales: 0,
-      }
-    );
+      );
 
     /*
-     * TOTAL DE TRABAJOS DEL PERÍODO
+     * Resumen de movimientos manuales.
      */
+    const resumenMovimientos =
+      movimientosPeriodo.reduce(
+        (resumen, movimiento) => {
+          const valor = Number(
+            movimiento.valor || 0
+          );
 
-    const totalTrabajos = trabajosPeriodo.reduce(
-      (acc, trabajo) =>
-        acc + Number(trabajo.precio || 0),
-      0
-    );
+          switch (movimiento.tipo) {
+            case LPMovimientoClienteTipo.ABONO:
+              resumen.abonos += valor;
+              resumen.creditos += valor;
+              break;
+
+            case LPMovimientoClienteTipo.AJUSTE_CREDITO:
+              resumen.ajustesCredito +=
+                valor;
+
+              resumen.creditos += valor;
+              break;
+
+            case LPMovimientoClienteTipo.AJUSTE_DEBITO:
+              resumen.ajustesDebito += valor;
+              resumen.debitosManuales +=
+                valor;
+              break;
+
+            case LPMovimientoClienteTipo.DEVOLUCION:
+              resumen.devoluciones += valor;
+              resumen.debitosManuales +=
+                valor;
+              break;
+          }
+
+          return resumen;
+        },
+        {
+          abonos: 0,
+          ajustesCredito: 0,
+          ajustesDebito: 0,
+          devoluciones: 0,
+          creditos: 0,
+          debitosManuales: 0,
+        }
+      );
+
+    const totalTrabajos =
+      trabajosPeriodo.reduce(
+        (total, trabajo) =>
+          total +
+          Number(trabajo.precio || 0),
+        0
+      );
 
     const totalDebitos =
-      totalTrabajos + resumenMovimientos.debitosManuales;
+      totalTrabajos +
+      resumenMovimientos.debitosManuales;
 
     const saldoFinal =
       saldoInicial +
@@ -548,10 +658,8 @@ export async function GET(request: NextRequest) {
       cliente: {
         id: cliente.id,
         nombre: cliente.nombre,
-        usaSaldoAnticipado:
-          cliente.usaSaldoAnticipado,
-        fechaInicioSaldo:
-          fechaKey(fechaInicioAcuerdo),
+        fechaInicioCuenta:
+          fechaKey(fechaInicioCuenta),
       },
 
       filtros: {
@@ -585,10 +693,19 @@ export async function GET(request: NextRequest) {
 
         totalDebitos,
         saldoFinal,
+
+        saldoPendiente:
+          saldoFinal < 0
+            ? Math.abs(saldoFinal)
+            : 0,
+
+        saldoAFavor:
+          saldoFinal > 0
+            ? saldoFinal
+            : 0,
       },
 
       movimientos,
-      configuracionPendiente: false,
     });
   } catch (error) {
     console.error(
