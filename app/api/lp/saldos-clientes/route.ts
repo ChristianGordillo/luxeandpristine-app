@@ -8,383 +8,639 @@ function fechaKey(fecha: Date | null) {
   return fecha.toISOString().split("T")[0];
 }
 
+function inicioDelDia(fecha: Date) {
+  const fechaNormalizada = new Date(fecha);
+
+  fechaNormalizada.setUTCHours(0, 0, 0, 0);
+
+  return fechaNormalizada;
+}
+
+function finDelDia(fecha: Date) {
+  const fechaNormalizada = new Date(fecha);
+
+  fechaNormalizada.setUTCHours(23, 59, 59, 999);
+
+  return fechaNormalizada;
+}
+
 function sumarValores(
   items: Array<{
     valor: unknown;
   }>
 ) {
   return items.reduce(
-    (total, item) => total + Number(item.valor || 0),
+    (total, item) =>
+      total + Number(item.valor || 0),
+    0
+  );
+}
+
+function sumarAplicaciones(
+  aplicaciones: Array<{
+    valorAplicado: unknown;
+  }>
+) {
+  return aplicaciones.reduce(
+    (total, aplicacion) =>
+      total +
+      Number(aplicacion.valorAplicado || 0),
     0
   );
 }
 
 export async function GET() {
   try {
-    const clientes = await prisma.lPCliente.findMany({
-      where: {
-        activo: true,
-      },
-      select: {
-        id: true,
-        nombre: true,
+    const clientes =
+      await prisma.lPCliente.findMany({
+        where: {
+          activo: true,
+        },
 
-        unidades: {
-          select: {
-            trabajos: {
-              select: {
-                id: true,
-                fecha: true,
-                precio: true,
-              },
-              orderBy: [
-                {
-                  fecha: "asc",
+        select: {
+          id: true,
+          nombre: true,
+
+          usaSaldoAnticipado: true,
+          fechaInicioSaldo: true,
+
+          unidades: {
+            select: {
+              trabajos: {
+                select: {
+                  id: true,
+                  fecha: true,
+                  precio: true,
                 },
-                {
-                  id: "asc",
+
+                orderBy: [
+                  {
+                    fecha: "asc",
+                  },
+                  {
+                    id: "asc",
+                  },
+                ],
+              },
+            },
+          },
+
+          movimientosFinancieros: {
+            select: {
+              id: true,
+              fecha: true,
+              tipo: true,
+              valor: true,
+
+              aplicacionesPago: {
+                select: {
+                  valorAplicado: true,
                 },
-              ],
-            },
-          },
-        },
-
-        movimientosFinancieros: {
-          select: {
-            id: true,
-            fecha: true,
-            tipo: true,
-            valor: true,
-
-            aplicacionesPago: {
-              select: {
-                valorAplicado: true,
               },
             },
+
+            orderBy: [
+              {
+                fecha: "asc",
+              },
+              {
+                id: "asc",
+              },
+            ],
           },
-          orderBy: [
-            {
-              fecha: "asc",
-            },
-            {
-              id: "asc",
-            },
-          ],
-        },
 
-        ciclosFinancieros: {
-          select: {
-            id: true,
-            tipo: true,
-            fechaInicio: true,
-            fechaFin: true,
+          ciclosFinancieros: {
+            select: {
+              id: true,
+              tipo: true,
+              fechaInicio: true,
+              fechaFin: true,
 
-            aplicacionesPago: {
-              select: {
-                valorAplicado: true,
+              aplicacionesPago: {
+                select: {
+                  valorAplicado: true,
+                },
               },
             },
+
+            orderBy: [
+              {
+                fechaInicio: "asc",
+              },
+              {
+                id: "asc",
+              },
+            ],
           },
-          orderBy: [
-            {
-              fechaInicio: "asc",
-            },
-            {
-              id: "asc",
-            },
-          ],
         },
-      },
-      orderBy: {
-        nombre: "asc",
-      },
-    });
 
-    const clientesConEstado = await Promise.all(
-      clientes.map(async (cliente) => {
-        /*
-         * Unificamos los trabajos de todas las unidades
-         * pertenecientes al cliente.
-         */
-        const trabajos = cliente.unidades
-          .flatMap((unidad) => unidad.trabajos)
-          .sort((a, b) => {
-            const diferenciaFecha =
-              a.fecha.getTime() - b.fecha.getTime();
+        orderBy: {
+          nombre: "asc",
+        },
+      });
 
-            if (diferenciaFecha !== 0) {
-              return diferenciaFecha;
-            }
+    const clientesConEstado =
+      await Promise.all(
+        clientes.map(async (cliente) => {
+          /*
+           * Todos los trabajos históricos del cliente.
+           */
+          const trabajosHistoricos =
+            cliente.unidades
+              .flatMap(
+                (unidad) => unidad.trabajos
+              )
+              .sort((a, b) => {
+                const diferenciaFecha =
+                  a.fecha.getTime() -
+                  b.fecha.getTime();
 
-            return a.id - b.id;
-          });
+                if (diferenciaFecha !== 0) {
+                  return diferenciaFecha;
+                }
 
-        const primerTrabajo = trabajos[0] || null;
-        const ultimoTrabajo =
-          trabajos.length > 0
-            ? trabajos[trabajos.length - 1]
-            : null;
+                return a.id - b.id;
+              });
 
-        const totalTrabajos = trabajos.reduce(
-          (total, trabajo) =>
-            total + Number(trabajo.precio || 0),
-          0
-        );
+          /*
+           * Si el cliente usa saldo anticipado,
+           * únicamente descontamos trabajos realizados
+           * desde fechaInicioSaldo.
+           *
+           * Para clientes normales se incluyen todos
+           * los trabajos registrados.
+           */
+          const fechaInicioCuenta =
+            cliente.usaSaldoAnticipado &&
+            cliente.fechaInicioSaldo
+              ? inicioDelDia(
+                  cliente.fechaInicioSaldo
+                )
+              : null;
 
-        const abonos =
-          cliente.movimientosFinancieros.filter(
-            (movimiento) =>
-              movimiento.tipo ===
-              LPMovimientoClienteTipo.ABONO
-          );
+          const trabajosCuenta =
+            fechaInicioCuenta
+              ? trabajosHistoricos.filter(
+                  (trabajo) =>
+                    trabajo.fecha.getTime() >=
+                    fechaInicioCuenta.getTime()
+                )
+              : trabajosHistoricos;
 
-        const ajustesCredito =
-          cliente.movimientosFinancieros.filter(
-            (movimiento) =>
-              movimiento.tipo ===
-              LPMovimientoClienteTipo.AJUSTE_CREDITO
-          );
+          const primerTrabajoHistorico =
+            trabajosHistoricos[0] || null;
 
-        const ajustesDebito =
-          cliente.movimientosFinancieros.filter(
-            (movimiento) =>
-              movimiento.tipo ===
-              LPMovimientoClienteTipo.AJUSTE_DEBITO
-          );
+          const ultimoTrabajoHistorico =
+            trabajosHistoricos.length > 0
+              ? trabajosHistoricos[
+                  trabajosHistoricos.length - 1
+                ]
+              : null;
 
-        const devoluciones =
-          cliente.movimientosFinancieros.filter(
-            (movimiento) =>
-              movimiento.tipo ===
-              LPMovimientoClienteTipo.DEVOLUCION
-          );
+          const primerTrabajoCuenta =
+            trabajosCuenta[0] || null;
 
-        const totalPagos = sumarValores(abonos);
-        const totalAjustesCredito =
-          sumarValores(ajustesCredito);
+          const ultimoTrabajoCuenta =
+            trabajosCuenta.length > 0
+              ? trabajosCuenta[
+                  trabajosCuenta.length - 1
+                ]
+              : null;
 
-        const totalAjustesDebito =
-          sumarValores(ajustesDebito);
+          const totalTrabajosHistoricos =
+            trabajosHistoricos.reduce(
+              (total, trabajo) =>
+                total +
+                Number(trabajo.precio || 0),
+              0
+            );
 
-        const totalDevoluciones =
-          sumarValores(devoluciones);
+          const totalTrabajos =
+            trabajosCuenta.reduce(
+              (total, trabajo) =>
+                total +
+                Number(trabajo.precio || 0),
+              0
+            );
 
-        const totalCreditos =
-          totalPagos + totalAjustesCredito;
+          const abonos =
+            cliente.movimientosFinancieros.filter(
+              (movimiento) =>
+                movimiento.tipo ===
+                LPMovimientoClienteTipo.ABONO
+            );
 
-        const totalDebitos =
-          totalTrabajos +
-          totalAjustesDebito +
-          totalDevoluciones;
+          const ajustesCredito =
+            cliente.movimientosFinancieros.filter(
+              (movimiento) =>
+                movimiento.tipo ===
+                LPMovimientoClienteTipo.AJUSTE_CREDITO
+            );
 
-        /*
-         * Saldo contable:
-         *
-         * positivo = dinero a favor del cliente
-         * cero     = cuenta conciliada
-         * negativo = dinero pendiente para L&P
-         */
-        const saldoCuenta =
-          totalCreditos - totalDebitos;
+          const ajustesDebito =
+            cliente.movimientosFinancieros.filter(
+              (movimiento) =>
+                movimiento.tipo ===
+                LPMovimientoClienteTipo.AJUSTE_DEBITO
+            );
 
-        const saldoPendiente =
-          saldoCuenta < 0
-            ? Math.abs(saldoCuenta)
-            : 0;
+          const devoluciones =
+            cliente.movimientosFinancieros.filter(
+              (movimiento) =>
+                movimiento.tipo ===
+                LPMovimientoClienteTipo.DEVOLUCION
+            );
 
-        const saldoAFavor =
-          saldoCuenta > 0
-            ? saldoCuenta
-            : 0;
+          const totalPagos =
+            sumarValores(abonos);
 
-        /*
-         * Solo los ABONOS representan pagos recibidos.
-         *
-         * La parte que todavía no esté aplicada a ciclos
-         * queda disponible como anticipo o excedente.
-         */
-        const totalPagosAplicados = abonos.reduce(
-          (total, movimiento) => {
-            const aplicadoMovimiento =
-              movimiento.aplicacionesPago.reduce(
-                (subtotal, aplicacion) =>
-                  subtotal +
-                  Number(
-                    aplicacion.valorAplicado || 0
-                  ),
-                0
-              );
+          const totalAjustesCredito =
+            sumarValores(ajustesCredito);
 
-            return total + aplicadoMovimiento;
-          },
-          0
-        );
+          const totalAjustesDebito =
+            sumarValores(ajustesDebito);
 
-        const pagosSinAplicar = Math.max(
-          0,
-          totalPagos - totalPagosAplicados
-        );
+          const totalDevoluciones =
+            sumarValores(devoluciones);
 
-        /*
-         * Resumen de ciclos.
-         *
-         * El valor trabajado se consulta dinámicamente
-         * porque no está almacenado en LPCicloCliente.
-         */
-        const ciclosCalculados = await Promise.all(
-          cliente.ciclosFinancieros.map(
-            async (ciclo) => {
-              const trabajosCiclo =
-                await prisma.lPTrabajoDiario.findMany({
-                  where: {
-                    unidad: {
-                      clienteId: cliente.id,
-                    },
-                    fecha: {
-                      gte: ciclo.fechaInicio,
-                      lte: ciclo.fechaFin,
-                    },
-                  },
-                  select: {
-                    precio: true,
-                  },
-                });
+          const totalCreditos =
+            totalPagos +
+            totalAjustesCredito;
 
-              const totalTrabajadoCiclo =
-                trabajosCiclo.reduce(
-                  (total, trabajo) =>
-                    total +
-                    Number(trabajo.precio || 0),
-                  0
-                );
+          /*
+           * En modalidad anticipada:
+           *
+           * solo los servicios desde fechaInicioSaldo
+           * consumen el anticipo.
+           *
+           * En modalidad normal:
+           *
+           * se consideran todos los trabajos.
+           */
+          const totalDebitos =
+            totalTrabajos +
+            totalAjustesDebito +
+            totalDevoluciones;
 
-              const totalAplicadoCiclo =
-                ciclo.aplicacionesPago.reduce(
-                  (total, aplicacion) =>
-                    total +
-                    Number(
-                      aplicacion.valorAplicado || 0
-                    ),
-                  0
-                );
+          /*
+           * Saldo contable:
+           *
+           * positivo = dinero disponible o a favor
+           * cero     = cuenta conciliada
+           * negativo = dinero pendiente para L&P
+           */
+          const saldoCuenta =
+            totalCreditos - totalDebitos;
 
-              const diferencia =
-                totalAplicadoCiclo -
-                totalTrabajadoCiclo;
+          const saldoPendiente =
+            saldoCuenta < 0
+              ? Math.abs(saldoCuenta)
+              : 0;
 
-              const estado =
-                diferencia === 0
-                  ? "CONCILIADO"
-                  : totalAplicadoCiclo === 0
-                    ? "SIN_PAGO"
-                    : "PAGO_PARCIAL";
+          const saldoAFavor =
+            saldoCuenta > 0
+              ? saldoCuenta
+              : 0;
 
-              return {
-                id: ciclo.id,
-                tipo: ciclo.tipo,
-                fechaInicio: fechaKey(
-                  ciclo.fechaInicio
+          /*
+           * Aplicaciones manuales a ciclos.
+           *
+           * Solo se usan operativamente para clientes
+           * que trabajan bajo conciliación por ciclos.
+           */
+          const totalPagosAplicadosCiclos =
+            abonos.reduce(
+              (total, movimiento) =>
+                total +
+                sumarAplicaciones(
+                  movimiento.aplicacionesPago
                 ),
-                fechaFin: fechaKey(ciclo.fechaFin),
-                totalTrabajado:
-                  totalTrabajadoCiclo,
-                totalAplicado:
-                  totalAplicadoCiclo,
-                saldoPendiente:
-                  diferencia < 0
-                    ? Math.abs(diferencia)
-                    : 0,
-                estado,
-              };
-            }
-          )
-        );
+              0
+            );
 
-        const ciclosConciliados =
-          ciclosCalculados.filter(
-            (ciclo) =>
-              ciclo.estado === "CONCILIADO"
-          ).length;
+          /*
+           * Para saldo anticipado, el dinero aplicado es
+           * el valor ya consumido por trabajos y débitos.
+           *
+           * Nunca puede superar el total de pagos
+           * recibidos.
+           */
+          const totalConsumidoAnticipo =
+            Math.min(
+              totalPagos,
+              Math.max(
+                0,
+                totalTrabajos +
+                  totalAjustesDebito +
+                  totalDevoluciones -
+                  totalAjustesCredito
+              )
+            );
 
-        const ciclosPendientes =
-          ciclosCalculados.filter(
-            (ciclo) =>
-              ciclo.estado !== "CONCILIADO"
-          ).length;
+          const totalPagosAplicados =
+            cliente.usaSaldoAnticipado
+              ? totalConsumidoAnticipo
+              : totalPagosAplicadosCiclos;
 
-        const ultimoCiclo =
-          ciclosCalculados.length > 0
-            ? ciclosCalculados[
-                ciclosCalculados.length - 1
-              ]
-            : null;
+          /*
+           * En cuenta normal:
+           * pagos todavía no aplicados a ciclos.
+           *
+           * En saldo anticipado:
+           * dinero que continúa disponible.
+           */
+          const pagosSinAplicar =
+            cliente.usaSaldoAnticipado
+              ? Math.max(
+                  0,
+                  totalPagos -
+                    totalConsumidoAnticipo
+                )
+              : Math.max(
+                  0,
+                  totalPagos -
+                    totalPagosAplicadosCiclos
+                );
 
-        let estadoCuenta:
-          | "SIN_MOVIMIENTOS"
-          | "CONCILIADO"
-          | "PENDIENTE"
-          | "SALDO_A_FAVOR";
+          /*
+           * Ciclos financieros.
+           *
+           * Se mantienen para clientes con cuenta
+           * corriente. En clientes con saldo anticipado
+           * no afectan el cálculo del saldo disponible.
+           */
+          const ciclosCalculados =
+            await Promise.all(
+              cliente.ciclosFinancieros.map(
+                async (ciclo) => {
+                  const trabajosCiclo =
+                    await prisma.lPTrabajoDiario.findMany({
+                      where: {
+                        unidad: {
+                          clienteId:
+                            cliente.id,
+                        },
 
-        if (
-          trabajos.length === 0 &&
-          cliente.movimientosFinancieros.length === 0
-        ) {
-          estadoCuenta = "SIN_MOVIMIENTOS";
-        } else if (saldoCuenta < 0) {
-          estadoCuenta = "PENDIENTE";
-        } else if (saldoCuenta > 0) {
-          estadoCuenta = "SALDO_A_FAVOR";
-        } else {
-          estadoCuenta = "CONCILIADO";
-        }
+                        fecha: {
+                          gte: inicioDelDia(
+                            ciclo.fechaInicio
+                          ),
 
-        return {
-          id: cliente.id,
-          nombre: cliente.nombre,
+                          lte: finDelDia(
+                            ciclo.fechaFin
+                          ),
+                        },
+                      },
 
-          fechaPrimerTrabajo: fechaKey(
-            primerTrabajo?.fecha || null
-          ),
+                      select: {
+                        precio: true,
+                      },
+                    });
 
-          fechaUltimoTrabajo: fechaKey(
-            ultimoTrabajo?.fecha || null
-          ),
+                  const totalTrabajadoCiclo =
+                    trabajosCiclo.reduce(
+                      (total, trabajo) =>
+                        total +
+                        Number(
+                          trabajo.precio || 0
+                        ),
+                      0
+                    );
 
-          totalTrabajos,
-          cantidadTrabajos: trabajos.length,
+                  const totalAplicadoCiclo =
+                    sumarAplicaciones(
+                      ciclo.aplicacionesPago
+                    );
 
-          totalPagos,
-          totalAjustesCredito,
-          totalAjustesDebito,
-          totalDevoluciones,
+                  const diferencia =
+                    totalAplicadoCiclo -
+                    totalTrabajadoCiclo;
 
-          totalCreditos,
-          totalDebitos,
+                  let estado:
+                    | "SIN_MOVIMIENTOS"
+                    | "SIN_PAGO"
+                    | "PAGO_PARCIAL"
+                    | "CONCILIADO"
+                    | "SALDO_A_FAVOR";
 
-          saldoCuenta,
-          saldoPendiente,
-          saldoAFavor,
+                  if (
+                    totalTrabajadoCiclo === 0 &&
+                    totalAplicadoCiclo === 0
+                  ) {
+                    estado =
+                      "SIN_MOVIMIENTOS";
+                  } else if (
+                    diferencia === 0
+                  ) {
+                    estado = "CONCILIADO";
+                  } else if (
+                    totalAplicadoCiclo === 0
+                  ) {
+                    estado = "SIN_PAGO";
+                  } else if (
+                    diferencia < 0
+                  ) {
+                    estado =
+                      "PAGO_PARCIAL";
+                  } else {
+                    estado =
+                      "SALDO_A_FAVOR";
+                  }
 
-          totalPagosAplicados,
-          pagosSinAplicar,
+                  return {
+                    id: ciclo.id,
+                    tipo: ciclo.tipo,
 
-          cantidadCiclos:
-            ciclosCalculados.length,
+                    fechaInicio: fechaKey(
+                      ciclo.fechaInicio
+                    ),
 
-          ciclosConciliados,
-          ciclosPendientes,
+                    fechaFin: fechaKey(
+                      ciclo.fechaFin
+                    ),
 
-          ultimoCiclo,
-          estadoCuenta,
-        };
-      })
-    );
+                    totalTrabajado:
+                      totalTrabajadoCiclo,
+
+                    totalAplicado:
+                      totalAplicadoCiclo,
+
+                    saldoPendiente:
+                      diferencia < 0
+                        ? Math.abs(
+                            diferencia
+                          )
+                        : 0,
+
+                    saldoAFavor:
+                      diferencia > 0
+                        ? diferencia
+                        : 0,
+
+                    estado,
+                  };
+                }
+              )
+            );
+
+          const ciclosConciliados =
+            ciclosCalculados.filter(
+              (ciclo) =>
+                ciclo.estado ===
+                "CONCILIADO"
+            ).length;
+
+          const ciclosPendientes =
+            ciclosCalculados.filter(
+              (ciclo) =>
+                ciclo.estado !==
+                "CONCILIADO" &&
+                ciclo.estado !==
+                "SIN_MOVIMIENTOS"
+            ).length;
+
+          const ultimoCiclo =
+            ciclosCalculados.length > 0
+              ? ciclosCalculados[
+                  ciclosCalculados.length -
+                    1
+                ]
+              : null;
+
+          let estadoCuenta:
+            | "SIN_MOVIMIENTOS"
+            | "CONCILIADO"
+            | "PENDIENTE"
+            | "SALDO_A_FAVOR";
+
+          if (
+            trabajosCuenta.length === 0 &&
+            cliente
+              .movimientosFinancieros
+              .length === 0
+          ) {
+            estadoCuenta =
+              "SIN_MOVIMIENTOS";
+          } else if (saldoCuenta < 0) {
+            estadoCuenta = "PENDIENTE";
+          } else if (saldoCuenta > 0) {
+            estadoCuenta =
+              "SALDO_A_FAVOR";
+          } else {
+            estadoCuenta = "CONCILIADO";
+          }
+
+          return {
+            id: cliente.id,
+            nombre: cliente.nombre,
+
+            modalidadCuenta:
+              cliente.usaSaldoAnticipado
+                ? "SALDO_ANTICIPADO"
+                : "CICLOS",
+
+            usaSaldoAnticipado:
+              cliente.usaSaldoAnticipado,
+
+            fechaInicioSaldo: fechaKey(
+              cliente.fechaInicioSaldo
+            ),
+
+            /*
+             * Fechas dentro del período que afecta
+             * el estado de cuenta.
+             */
+            fechaPrimerTrabajo: fechaKey(
+              primerTrabajoCuenta?.fecha ||
+                null
+            ),
+
+            fechaUltimoTrabajo: fechaKey(
+              ultimoTrabajoCuenta?.fecha ||
+                null
+            ),
+
+            /*
+             * Información histórica adicional.
+             */
+            fechaPrimerTrabajoHistorico:
+              fechaKey(
+                primerTrabajoHistorico?.fecha ||
+                  null
+              ),
+
+            fechaUltimoTrabajoHistorico:
+              fechaKey(
+                ultimoTrabajoHistorico?.fecha ||
+                  null
+              ),
+
+            totalTrabajosHistoricos,
+            cantidadTrabajosHistoricos:
+              trabajosHistoricos.length,
+
+            /*
+             * Estos son los trabajos que realmente
+             * afectan el saldo actual.
+             */
+            totalTrabajos,
+            cantidadTrabajos:
+              trabajosCuenta.length,
+
+            totalPagos,
+            totalAnticipos: totalPagos,
+
+            totalAjustesCredito,
+            totalAjustesDebito,
+            totalDevoluciones,
+
+            totalCreditos,
+            totalDebitos,
+
+            saldoCuenta,
+            saldoPendiente,
+            saldoAFavor,
+
+            /*
+             * Campos específicos de anticipo.
+             */
+            totalServiciosDescontados:
+              cliente.usaSaldoAnticipado
+                ? totalTrabajos
+                : 0,
+
+            saldoDisponible:
+              cliente.usaSaldoAnticipado
+                ? saldoAFavor
+                : 0,
+
+            totalPagosAplicados,
+            pagosSinAplicar,
+
+            cantidadCiclos:
+              ciclosCalculados.length,
+
+            ciclosConciliados,
+            ciclosPendientes,
+
+            ultimoCiclo,
+            estadoCuenta,
+          };
+        })
+      );
 
     const resumenGeneral =
       clientesConEstado.reduce(
         (resumen, cliente) => {
+          /*
+           * En clientes anticipados solo se suma lo
+           * trabajado desde fechaInicioSaldo.
+           */
           resumen.totalFacturado +=
             cliente.totalTrabajos;
+
+          resumen.totalFacturadoHistorico +=
+            cliente.totalTrabajosHistoricos;
 
           resumen.totalRecibido +=
             cliente.totalPagos;
@@ -399,28 +655,54 @@ export async function GET() {
             cliente.pagosSinAplicar;
 
           if (
-            cliente.estadoCuenta === "PENDIENTE"
+            cliente.usaSaldoAnticipado
           ) {
-            resumen.clientesPendientes += 1;
+            resumen.clientesConAnticipo +=
+              1;
+
+            resumen.totalAnticipos +=
+              cliente.totalAnticipos;
+
+            resumen.totalServiciosDescontados +=
+              cliente.totalServiciosDescontados;
+
+            resumen.totalSaldoDisponible +=
+              cliente.saldoDisponible;
+          }
+
+          if (
+            cliente.estadoCuenta ===
+            "PENDIENTE"
+          ) {
+            resumen.clientesPendientes +=
+              1;
           }
 
           if (
             cliente.estadoCuenta ===
             "SALDO_A_FAVOR"
           ) {
-            resumen.clientesConSaldoAFavor += 1;
+            resumen.clientesConSaldoAFavor +=
+              1;
           }
 
           return resumen;
         },
         {
           totalFacturado: 0,
+          totalFacturadoHistorico: 0,
           totalRecibido: 0,
           totalPendiente: 0,
           totalSaldoAFavor: 0,
           totalPagosSinAplicar: 0,
+
           clientesPendientes: 0,
           clientesConSaldoAFavor: 0,
+
+          clientesConAnticipo: 0,
+          totalAnticipos: 0,
+          totalServiciosDescontados: 0,
+          totalSaldoDisponible: 0,
         }
       );
 

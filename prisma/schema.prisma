@@ -57,6 +57,9 @@ model LPCliente {
   email    String?
   activo   Boolean @default(true)
 
+  usaSaldoAnticipado  Boolean   @default(false)
+  fechaInicioSaldo    DateTime?
+
   unidades               LPUnidad[]
   movimientosFinancieros LPMovimientoCliente[]
   ciclosFinancieros      LPCicloCliente[]
